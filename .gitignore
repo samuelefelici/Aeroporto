@@ -6,9 +6,6 @@ __pycache__/
 venv/
 .env
 
-# Streamlit
-.streamlit/secrets.toml
-
 # Editor / OS
 .vscode/
 .idea/

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>✈️ Flight Matrix — Shuttle Aeroporto</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">✈️ Flight Matrix <span class="brand-sub">Shuttle Aeroporto → Turni Guida</span></span>
+    <span id="topMeta" class="top-meta"></span>
+  </header>
+
+  <main class="page">
+    <!-- ─── STEP 1 · UPLOAD ─── -->
+    <section id="uploadCard" class="card intro">
+      <div class="intro-text">
+        <p>🛫🛬 <strong>Carica il PDF con gli orari dei voli.</strong> L'app:</p>
+        <ul>
+          <li>considera <strong>solo voli passeggeri (PAX)</strong>, esclude i CARGO;</li>
+          <li>raggruppa per <strong>giorno della settimana</strong> e mostra la <strong>matrice</strong> voli × date;</li>
+          <li>filtra per <strong>fasce orarie</strong>, poi <strong>genera le corse</strong> del bus;</li>
+          <li>apre la <strong>Finestra di Lavoro</strong> per comporre i <strong>turni guida</strong> (normativa extraurbano).</li>
+        </ul>
+      </div>
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" accept="application/pdf" hidden />
+        <span class="dz-icon">📄</span>
+        <span class="dz-title">Trascina qui il PDF o clicca per selezionarlo</span>
+        <span class="dz-hint">Layout settimanale: colonne Flight / Route / A/D / Type / ETA / ETD</span>
+      </label>
+      <div id="uploadStatus" class="status"></div>
+    </section>
+
+    <!-- ─── STEP 2 · MATRICE + FILTRI ─── -->
+    <section id="resultsCard" class="card hidden">
+      <div class="metrics" id="metrics"></div>
+
+      <div class="controls">
+        <div class="control">
+          <label>Giorno della settimana</label>
+          <select id="weekdaySelect"></select>
+        </div>
+        <div class="control">
+          <label>Codice volo (contiene)</label>
+          <input type="text" id="flightFilter" placeholder="Es. FR, EN8, W6…" />
+        </div>
+        <div class="control">
+          <label>Aeroporto / rotta</label>
+          <select id="airportFilter" multiple size="1"></select>
+        </div>
+        <div class="control">
+          <label>Movimento</label>
+          <div class="segmented" id="adFilter">
+            <button data-v="all" class="active">Arr + Part</button>
+            <button data-v="A">Solo arrivi</button>
+            <button data-v="P">Solo partenze</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- FASCE ORARIE -->
+      <div class="slots">
+        <div class="slots-head">
+          <span class="slots-title">⏱ Fasce orarie</span>
+          <span class="slots-hint">filtra i voli per orario operativo (ETA per gli arrivi, ETD per le partenze)</span>
+        </div>
+        <div class="slots-body">
+          <div class="slot-presets" id="slotPresets">
+            <button data-from="0"    data-to="1439">Tutte</button>
+            <button data-from="300"  data-to="720">🌅 Mattina 05–12</button>
+            <button data-from="720"  data-to="1020">☀️ Pomeriggio 12–17</button>
+            <button data-from="1020" data-to="1380">🌆 Sera 17–23</button>
+            <button data-from="1380" data-to="1740">🌙 Notte 23–05</button>
+          </div>
+          <div class="slot-range">
+            <label>Dalle <input type="time" id="slotFrom" value="00:00" /></label>
+            <label>Alle <input type="time" id="slotTo" value="23:59" /></label>
+            <span id="slotInfo" class="slot-info"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="matrix-head">
+        <div class="legend">
+          <span class="pill"><span class="dot arr"></span>Arrivi (A)</span>
+          <span class="pill"><span class="dot dep"></span>Partenze (P)</span>
+        </div>
+        <div class="matrix-actions">
+          <button id="selectAllBtn" class="btn ghost">☑ Seleziona tutti (filtrati)</button>
+          <button id="clearSelBtn" class="btn ghost">☐ Deseleziona</button>
+          <span id="selCount" class="sel-count">0 selezionati</span>
+          <button id="genCorseBtn" class="btn primary" disabled>🚌 Genera corse</button>
+        </div>
+      </div>
+
+      <div class="matrix-wrap">
+        <table id="matrixTable" class="matrix"></table>
+        <p id="matrixEmpty" class="empty hidden">Nessun volo corrisponde ai filtri impostati.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ─── DIALOG · GENERAZIONE CORSE (Schengen) ─── -->
+  <div id="genDialog" class="modal hidden">
+    <div class="modal-box">
+      <h3>🚌 Genera corse — <span id="genDayLabel"></span></h3>
+      <p class="modal-sub">
+        <strong>Partenze:</strong> il bus arriva in aeroporto 1h prima del volo (tragitto 40′ da Piazza Cavour).<br>
+        <strong>Arrivi:</strong> il bus parte dall'aeroporto 25′ dopo l'atterraggio se <em>Schengen</em>, 35′ se <em>extra-Schengen</em>, e impiega 35′ per Piazza Cavour.
+      </p>
+      <div id="schengenPanel" class="schengen-panel"></div>
+      <div class="modal-actions">
+        <button id="genCancel" class="btn ghost">Annulla</button>
+        <button id="genConfirm" class="btn primary">Genera e apri la Finestra di Lavoro</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── FINESTRA DI LAVORO (montata da JS) ─── -->
+  <div id="workWindow" class="ww hidden"></div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
