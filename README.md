@@ -1,15 +1,21 @@
 # ✈️ Flight Matrix — Shuttle Aeroporto → Turni Guida
 
-Web app che importa il PDF con l'orario voli di un aeroporto e permette di:
+Software di programmazione dei servizi aeroportuali: importa il PDF con l'orario
+voli (file **mensile**) e permette di:
 
-1. **Parsare i voli PAX** (i CARGO sono esclusi), robusto anche quando un giorno è
-   spezzato a cavallo tra due pagine del PDF;
-2. costruire la **matrice voli × date** raggruppata per giorno della settimana, con
-   filtri (codice volo, aeroporto, arrivi/partenze) e un **filtro per fasce orarie**;
+1. all'import scegliere **mese e anno** del file (ogni file è mensile) e
+   **parsare i voli PAX** (i CARGO sono esclusi), robusto anche quando un giorno è
+   spezzato a cavallo tra due pagine e con intestazioni sia complete
+   (`Wed 15 Apr 2026`) sia brevi (`Wed 15`, con il mese/anno scelti);
+2. costruire la **matrice voli × date** per **categoria di giorno**, mostrando anche
+   i **giorni effettivi** che vi appartengono, con filtri (codice volo, aeroporto,
+   arrivi/partenze) e un **filtro per fasce orarie**;
 3. **generare le corse** del bus a partire dai voli selezionati;
 4. aprire una **Finestra di Lavoro** in cui muovere, ordinare, selezionare e
    **rimpacchettare** le corse in **turni guida**, con verifica della **normativa
-   extraurbano** (Accordo Quadro 18/05/2012).
+   extraurbano** (Accordo Quadro 18/05/2012);
+5. **salvare automaticamente** il lavoro: tornando indietro dalla Finestra di Lavoro
+   i turni restano salvati (e si ritrovano al riavvio) e si **riprendono** con un clic.
 
 > Non è più un'app Streamlit: è una web app "normale" — un backend **FastAPI** che
 > fa solo il parsing del PDF ed espone `/api/parse`, e una **SPA statica** (HTML/CSS/JS
@@ -65,6 +71,18 @@ Ispirata alla "Finestra di Lavoro" dei turni guida di TransitIntel:
 è di mattina, **50–99** se di pomeriggio) + una lettera finale **S** se il turno
 contiene una sola corsa andata/ritorno (≤ 2 corse) o **I** se ne contiene di più.
 Esempio: **`LU01S`** = turno di lunedì mattina con una sola andata/ritorno.
+
+## 💾 Salvataggio del lavoro
+
+Il lavoro è **salvato automaticamente** nel browser (`localStorage`): l'ultimo file
+importato (mese/anno + voli) viene ripristinato al riavvio, e lo stato della Finestra
+di Lavoro (turni, corse, posizioni) è salvato **per categoria di giorno**. Tornando
+alla matrice compare **Riprendi lavoro** per riaprire i turni dove li avevi lasciati;
+rigenerare le corse da capo chiede conferma prima di sovrascrivere.
+
+> Il salvataggio è locale al browser/dispositivo. Per un archivio condiviso servirebbe
+> una persistenza server-side (evoluzione futura); intanto l'**export CSV** dei turni
+> permette di portare fuori il risultato.
 
 ---
 

@@ -17,7 +17,9 @@ Endpoint:
 
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from typing import Optional
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -39,8 +41,12 @@ def health() -> str:
 
 
 @app.post("/api/parse")
-async def parse(file: UploadFile = File(...)) -> JSONResponse:
-    """Riceve il PDF orario voli e restituisce i voli PAX parsati."""
+async def parse(
+    file: UploadFile = File(...),
+    month: Optional[int] = Form(None),
+    year: Optional[int] = Form(None),
+) -> JSONResponse:
+    """Riceve il PDF orario voli (mensile) + mese/anno e restituisce i voli PAX."""
     if file.content_type not in ("application/pdf", "application/octet-stream", None) \
             and not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=415, detail="Carica un file PDF.")
@@ -53,7 +59,7 @@ async def parse(file: UploadFile = File(...)) -> JSONResponse:
 
     import io
     try:
-        flights = parse_pdf_to_flights(io.BytesIO(data))
+        flights = parse_pdf_to_flights(io.BytesIO(data), ref_month=month, ref_year=year)
     except Exception as exc:  # parsing robusto: errori → 422 con messaggio
         raise HTTPException(status_code=422, detail=f"PDF non riconosciuto: {exc}") from exc
 
