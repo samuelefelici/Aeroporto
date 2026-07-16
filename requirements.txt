@@ -1,8 +1,9 @@
-streamlit
-folium
-streamlit-folium
-pandas
-shapely
-geopy
-geopandas
-pdfplumber
+# Dipendenze effettivamente usate dall'app (import in streamlit_app.py).
+# Versioni pinnate per build riproducibili su Coolify.
+#
+# Nota: le vecchie dipendenze geo (folium, streamlit-folium, shapely, geopy,
+# geopandas) sono state rimosse perché non erano importate da nessuna parte:
+# appesantivano l'immagine Docker (GDAL & co.) senza essere usate.
+streamlit==1.59.2
+pandas==3.0.3
+pdfplumber==0.11.10
