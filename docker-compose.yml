@@ -1,0 +1,26 @@
+# docker-compose per Coolify (build pack "Docker Compose") o per test locale.
+#
+# Locale:   docker compose up --build   ->  http://localhost:8501
+# Coolify:  seleziona "Docker Compose" e punta a questo file; l'esposizione
+#           HTTPS/dominio la gestisce Coolify tramite Traefik sulla porta 8501.
+
+services:
+  flight-matrix:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Coolify inietta il proprio proxy: internamente il servizio resta su 8501.
+    ports:
+      - "8501:8501"
+    environment:
+      STREAMLIT_SERVER_HEADLESS: "true"
+      STREAMLIT_SERVER_ADDRESS: "0.0.0.0"
+      STREAMLIT_SERVER_PORT: "8501"
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=4).read().strip()==b'ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

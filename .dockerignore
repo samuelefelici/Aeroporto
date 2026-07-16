@@ -1,0 +1,28 @@
+# Git / CI
+.git
+.gitignore
+.github
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Documentazione e file non necessari al runtime
+README.md
+*.md
+docker-compose.yml
+
+# PDF di esempio / dati locali (vengono caricati dall'utente a runtime)
+*.pdf
