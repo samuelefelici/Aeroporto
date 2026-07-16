@@ -242,8 +242,21 @@ table.matrix td.ad-A { color: var(--arr); font-weight: 700; } table.matrix td.ad
 .ww-row .r-line { width: 68px; flex-shrink: 0; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ww-row .r-t { width: 42px; flex-shrink: 0; font-family: ui-monospace, monospace; }
 .ww-row .r-loc { flex: 1; min-width: 0; opacity: .9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ww-gap { display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 18px; font-size: 9px; color: var(--muted); }
+.ww-gap { display: flex; align-items: center; gap: 6px; padding: 0 8px; min-height: 18px; font-size: 9px; color: var(--muted); }
 .ww-gap .ln { flex: 1; border-top: 1px dashed var(--border-strong); }
+.ww-gap.sosta { color: #67e8f9; }
+.ww-gap.sosta .ln { border-color: rgba(103,232,249,.4); }
+.ww-gap.deposito { color: #fdba74; }
+.ww-gap.deposito .ln { border-color: rgba(253,186,116,.4); }
+.ww-gap.transfer { color: #c4b5fd; }
+.ww-gap.transfer .ln { border-color: rgba(196,181,253,.4); }
+.ww-gap[style*="cursor: pointer"]:hover { color: #fff; }
+
+/* menu override tipologia + riga tipologia */
+.ww-type-sel { background: var(--bg-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font-size: 9px; padding: 1px 3px; max-width: 130px; cursor: pointer; }
+.ww-typeline { padding: 3px 8px; font-size: 10px; border-bottom: 1px solid var(--border); color: var(--accent); background: rgba(167,139,250,.06); }
+.ww-typeline b { color: var(--accent); }
+.ww-typeline .ovr { color: #fdba74; font-weight: 700; }
 
 /* riga libera sul canvas */
 .ww-loose { position: absolute; display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 26px; width: 470px;

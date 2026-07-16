@@ -20,19 +20,31 @@ const GEN = {
 
 // Fuorilinea deposito Ancona ↔ punto di servizio (minuti)
 const FUORILINEA = {
-  [LOC.PZC]: 10,   // dato dalla specifica: deposito Ancona → Piazza Cavour = 10'
-  [LOC.APT]: 10,   // deposito Ancona → Aeroporto (assunzione: pari a PzCavour)
+  [LOC.PZC]: 10,   // deposito Ancona → Piazza Cavour = 10' (specifica)
+  [LOC.APT]: 30,   // deposito Ancona → Aeroporto = 30' (specifica: rientro in deposito)
 };
+
+// Sosta inoperosa (extraurbano): se l'autista resta fermo in AEROPORTO oltre la
+// soglia, il gap è "sosta inoperosa" (standby retribuito a quota, non pausa/riposo).
+// In presenza di strutture (terminal) il contributo all'orario è 0.12 (= 12%).
+const SOSTA = { thresholdMin: 30, coeff: 0.12 };
+
+// Trasferimento a vuoto Aeroporto ↔ Piazza Cavour (minuti): inserito quando due
+// corse consecutive iniziano/finiscono in punti diversi e il bus deve
+// riposizionarsi vuoto per ripartire con l'altra corsa.
+const TRANSFER_EMPTY = 30;
 
 // Normativa EXTRAURBANO (da TransitIntel/optimizer-rules.ts — Accordo Quadro 18/05/2012)
 const RULES = {
-  intero:    { maxNastro: 480, maxLavoro: 480 },
-  semiunico: { maxNastro: 540, maxLavoro: 540, intMin: 40,  intMax: 179 },
-  spezzato:  { maxNastro: 630, maxLavoro: 630, intMin: 180 },
-  rd131:     { maxGuidaContinuativa: 270, sostaMinima: 15 },
+  intero:          { maxNastro: 480, maxLavoro: 480 },
+  semiunico:       { maxNastro: 540, maxLavoro: 540, intMin: 40, intMax: 179 },
+  spezzato:        { maxNastro: 630, maxLavoro: 630, intMin: 180 },
+  sosta_inoperosa: { maxNastro: 555, maxLavoro: 540 },   // 9h15 di nastro
+  rd131:           { maxGuidaContinuativa: 270, sostaMinima: 15 },
   hourlyRate: 22,
 };
-const TYPE_LABEL = { intero: "Intero (unico)", semiunico: "Semiunico", spezzato: "Spezzato" };
+const TYPE_LABEL = { intero: "Intero (unico)", semiunico: "Semiunico", spezzato: "Spezzato", sosta_inoperosa: "Sosta inoperosa" };
+const TYPE_ORDER = ["intero", "semiunico", "spezzato", "sosta_inoperosa"];
 
 const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const WEEKDAY_IT = { Mon: "Lunedì", Tue: "Martedì", Wed: "Mercoledì", Thu: "Giovedì", Fri: "Venerdì", Sat: "Sabato", Sun: "Domenica" };
@@ -423,47 +435,94 @@ function openWorkWindow(corse) {
 
 function closeWorkWindow() { WW.open = false; $("#workWindow").classList.add("hidden"); $("#workWindow").innerHTML = ""; }
 
-/* verifica normativa extraurbano di un insieme di corse */
-function verifyTurno(ids) {
+/* verifica normativa extraurbano di un insieme di corse.
+ * opts.gapModes: { "<prevId>><nextId>": "sosta" | "deposito" } — scelta per gap
+ *                (sosta inoperosa in aeroporto ⇄ rientro in deposito).
+ * opts.typeOverride: forza la tipologia scelta dall'operatore. */
+function verifyTurno(ids, opts = {}) {
+  const gapModes = opts.gapModes || {};
   const cs = ids.map(id => WW.corse.get(id)).filter(Boolean).sort((a, b) => a.startMin - b.startMin);
   const violations = [];
-  if (!cs.length) return { type: "intero", valid: false, violations: ["turno vuoto"], nastroMin: 0, lavoroMin: 0, guidaMin: 0, guidaContMax: 0, costEuro: 0, cs };
+  if (!cs.length) return { type: "intero", autoType: "intero", overridden: false, valid: false, violations: ["turno vuoto"], nastroMin: 0, lavoroMin: 0, guidaMin: 0, guidaContMax: 0, costEuro: 0, gapInfo: [], cs };
   for (let i = 1; i < cs.length; i++) if (cs[i].startMin < cs[i - 1].endMin) violations.push(`Corse sovrapposte (${cs[i - 1].flight}·${cs[i].flight})`);
 
   const first = cs[0], last = cs[cs.length - 1];
   const preF = fuoriFor(first.from), postF = fuoriFor(last.to);
   const turnoStart = first.startMin - preF, turnoEnd = last.endMin + postF;
   const nastro = turnoEnd - turnoStart;
+  const fuoriRT = 2 * fuoriFor(LOC.APT);   // rientro deposito A/R (60')
 
-  const gaps = [];
-  for (let i = 1; i < cs.length; i++) gaps.push(cs[i].startMin - cs[i - 1].endMin);
-  const maxGap = gaps.length ? Math.max(...gaps) : 0;
-  const bigGaps = gaps.filter(g => g >= RULES.semiunico.intMin);
+  let guida = preF + postF + cs.reduce((s, c) => s + (c.endMin - c.startMin), 0);
+  let unpaid = 0, maxRealBreak = 0, hasSosta = false;
+  const gapInfo = [];
+  let run = preF + (cs[0].endMin - cs[0].startMin), maxCont = 0;   // guida continuativa (RD131)
 
-  let type = "intero";
-  if (maxGap >= RULES.spezzato.intMin) type = "spezzato";
-  else if (maxGap >= RULES.semiunico.intMin) type = "semiunico";
-
-  const guida = preF + postF + cs.reduce((s, c) => s + (c.endMin - c.startMin), 0);
-  const lavoro = nastro - bigGaps.reduce((s, g) => s + g, 0);
-
-  // guida continuativa (RD131): reset quando una sosta ≥ sostaMinima
-  let run = preF + (cs[0].endMin - cs[0].startMin), maxCont = 0;
   for (let i = 1; i < cs.length; i++) {
-    const gap = cs[i].startMin - cs[i - 1].endMin;
-    if (gap >= RULES.rd131.sostaMinima) { maxCont = Math.max(maxCont, run); run = 0; }
-    run += (cs[i].endMin - cs[i].startMin);
+    const c0 = cs[i - 1], c1 = cs[i];
+    const g = c1.startMin - c0.endMin;
+    if (g <= 0) { run += (c1.endMin - c1.startMin); continue; }
+    const locPrev = c0.to, locNext = c1.from;
+    const key = c0.id + ">" + c1.id;
+    const mode = gapModes[key];
+    let kind, transferMin = 0, idle = g, breaksCont = false, canDepot = false;
+
+    if (locPrev !== locNext) {
+      // trasferimento a vuoto obbligatorio (il bus deve riposizionarsi)
+      transferMin = TRANSFER_EMPTY;
+      idle = g - transferMin;                  // attesa (a locPrev) prima del trasferimento
+      if (idle < 0) { violations.push(`Trasferimento a vuoto ${fmtDur(TRANSFER_EMPTY)} incompatibile col gap ${fmtDur(g)} (${c0.flight}·${c1.flight})`); idle = 0; }
+      guida += transferMin;
+      if (locPrev === LOC.APT && idle > SOSTA.thresholdMin) {
+        kind = "sosta_inoperosa"; hasSosta = true; unpaid += idle * (1 - SOSTA.coeff); breaksCont = true;
+      } else if (idle >= RULES.semiunico.intMin) {
+        kind = "break"; unpaid += idle; maxRealBreak = Math.max(maxRealBreak, idle); breaksCont = true;
+      } else {
+        kind = "transfer"; breaksCont = idle >= RULES.rd131.sostaMinima;
+      }
+    } else {
+      const airportSosta = locPrev === LOC.APT && g > SOSTA.thresholdMin;
+      canDepot = airportSosta && g >= fuoriRT;   // rientro in deposito fattibile solo se c'è tempo (≥60')
+      if (mode === "deposito" && canDepot) {
+        kind = "deposito"; guida += fuoriRT; unpaid += Math.max(0, g - fuoriRT); maxRealBreak = Math.max(maxRealBreak, g); breaksCont = true;
+      } else if (airportSosta) {
+        kind = "sosta_inoperosa"; hasSosta = true; unpaid += g * (1 - SOSTA.coeff); breaksCont = true;
+      } else if (g >= RULES.semiunico.intMin) {
+        kind = "break"; unpaid += g; maxRealBreak = Math.max(maxRealBreak, g); breaksCont = true;
+      } else {
+        kind = "wait"; breaksCont = g >= RULES.rd131.sostaMinima;
+      }
+    }
+    // guida continuativa: la sosta/interruzione resetta; il trasferimento è guida
+    // contigua alla corsa seguente
+    if (breaksCont) { maxCont = Math.max(maxCont, run); run = 0; }
+    run += transferMin + (c1.endMin - c1.startMin);
+    gapInfo.push({ i, key, dur: g, kind, loc: locPrev, locNext, transferMin, idle, canDepot });
   }
   run += postF; maxCont = Math.max(maxCont, run);
 
+  const lavoro = Math.round(nastro - unpaid);
+
+  // classificazione automatica: una vera interruzione domina; altrimenti la
+  // sosta inoperosa; altrimenti turno intero
+  let autoType = "intero";
+  if (maxRealBreak >= RULES.spezzato.intMin) autoType = "spezzato";
+  else if (maxRealBreak >= RULES.semiunico.intMin) autoType = "semiunico";
+  else if (hasSosta) autoType = "sosta_inoperosa";
+
+  const overridden = !!(opts.typeOverride && RULES[opts.typeOverride]);
+  const type = overridden ? opts.typeOverride : autoType;
+
   const lim = RULES[type];
-  if (nastro > lim.maxNastro) violations.push(`Nastro ${fmtDur(nastro)} > ${fmtDur(lim.maxNastro)} (${type})`);
-  if (lavoro > lim.maxLavoro) violations.push(`Lavoro ${fmtDur(lavoro)} > ${fmtDur(lim.maxLavoro)} (${type})`);
+  if (nastro > lim.maxNastro) violations.push(`Nastro ${fmtDur(nastro)} > ${fmtDur(lim.maxNastro)} (${TYPE_LABEL[type]})`);
+  if (lavoro > lim.maxLavoro) violations.push(`Lavoro ${fmtDur(lavoro)} > ${fmtDur(lim.maxLavoro)} (${TYPE_LABEL[type]})`);
   if (maxCont > RULES.rd131.maxGuidaContinuativa) violations.push(`Guida continuativa ${fmtDur(maxCont)} > ${fmtDur(RULES.rd131.maxGuidaContinuativa)} (RD131)`);
 
   const costEuro = Math.round((guida / 60) * RULES.hourlyRate);
-  return { type, valid: violations.length === 0, violations, nastroMin: nastro, lavoroMin: lavoro, guidaMin: guida, guidaContMax: maxCont, turnoStart, turnoEnd, gaps, costEuro, cs };
+  return { type, autoType, overridden, valid: violations.length === 0, violations, nastroMin: nastro, lavoroMin: lavoro, guidaMin: guida, guidaContMax: maxCont, turnoStart, turnoEnd, gapInfo, costEuro, cs };
 }
+
+/* verifica di un turno, con le scelte dell'operatore (gap modes + override) */
+function verifyShift(s) { return verifyTurno(s.corsaIds, { gapModes: s.gapModes, typeOverride: s.typeOverride }); }
 
 /* ── chrome (header + body) ── */
 function buildWWChrome(root) {
@@ -528,6 +587,23 @@ function orderLoose(ids) {
 }
 function freeShiftSpot(i) { return { x: 40 + (i % 3) * 540, y: 20 + Math.floor(i / 3) * 300 }; }
 
+/* codifica turno: 2 lettere del giorno + 2 cifre (00–49 mattina / 50–99
+ * pomeriggio, in base all'inizio del turno) + lettera finale S (1 corsa A/R,
+ * cioè ≤ 2 corse) oppure I (più corse). Es. LU01S. La numerazione è progressiva
+ * per fascia (mattina/pomeriggio), calcolata su tutti i turni. */
+function computeShiftCodes() {
+  const day2 = (WW.dayLabel || "XX").slice(0, 2).toUpperCase();
+  const rows = WW.shifts.map(s => ({ id: s.id, start: verifyShift(s).turnoStart, n: s.corsaIds.length }));
+  const morning = rows.filter(r => r.start < 720).sort((a, b) => a.start - b.start);
+  const afternoon = rows.filter(r => r.start >= 720).sort((a, b) => a.start - b.start);
+  const codes = {};
+  const mk = (r, num) => `${day2}${String(num).padStart(2, "0")}${r.n <= 2 ? "S" : "I"}`;
+  morning.forEach((r, i) => { codes[r.id] = mk(r, Math.min(49, i)); });
+  afternoon.forEach((r, i) => { codes[r.id] = mk(r, Math.min(99, 50 + i)); });
+  return codes;
+}
+function shiftCodeOf(id) { return (WW.shiftCodes && WW.shiftCodes[id]) || id; }
+
 /* ── azioni turni ── */
 function repack() {
   const ids = [...WW.selected];
@@ -541,11 +617,11 @@ function repack() {
   ids.forEach(id => WW.loose.delete(id));
   // nuovo turno
   const nid = "FL" + String(++WW.seq).padStart(2, "0");
-  WW.shifts.push({ id: nid, corsaIds: ids.slice() });
+  WW.shifts.push({ id: nid, corsaIds: ids.slice(), gapModes: {}, typeOverride: null });
   WW.pos["shift:" + nid] = freeShiftSpot(WW.shifts.length - 1);
   WW.selected.clear();
   renderWW();
-  toast(`Turno guida ${nid} creato · ${TYPE_LABEL[v.type]}${v.valid ? "" : " ⚠ con violazioni"}`, v.valid ? "ok" : "err");
+  toast(`Turno guida ${shiftCodeOf(nid)} creato · ${TYPE_LABEL[v.type]}${v.valid ? "" : " ⚠ con violazioni"}`, v.valid ? "ok" : "err");
 }
 
 function unpackShift(id, doRender = true) {
@@ -598,6 +674,7 @@ function renderWW() {
   $("#wwRepack").textContent = `📦 Rimpacchetta${WW.selected.size ? ` (${WW.selected.size})` : ""}`;
   $("#wwUnpackAll").disabled = WW.shifts.length === 0;
 
+  WW.shiftCodes = computeShiftCodes();
   renderSidebar();
   renderCanvas();
 }
@@ -608,19 +685,19 @@ function renderSidebar() {
   head.innerHTML = `<div class="t">Turni guida</div><div class="h">riepilogo e normativa extraurbano</div>`;
   side.append(head);
 
-  const counts = { intero: 0, semiunico: 0, spezzato: 0 };
-  const verified = WW.shifts.map(s => ({ s, v: verifyTurno(s.corsaIds) }));
+  const counts = { intero: 0, semiunico: 0, spezzato: 0, sosta_inoperosa: 0 };
+  const verified = WW.shifts.map(s => ({ s, v: verifyShift(s) }));
   verified.forEach(({ v }) => counts[v.type]++);
 
   const sum = el("div", "ww-side-item");
   sum.innerHTML = `<div class="lab">${WW.shifts.length} turni · ${verified.filter(x => !x.v.valid).length} con violazioni</div>
-    <div class="sub">${counts.intero} interi · ${counts.semiunico} semiunici · ${counts.spezzato} spezzati</div>`;
+    <div class="sub">${counts.intero} interi · ${counts.semiunico} semiunici · ${counts.spezzato} spezzati · ${counts.sosta_inoperosa} sosta inop.</div>`;
   side.append(sum);
 
   verified.forEach(({ s, v }) => {
     const it = el("div", "ww-side-item");
     it.style.cursor = "pointer";
-    it.innerHTML = `<div class="lab">${v.valid ? "✅" : "⚠️"} ${s.id} · <span style="color:var(--accent)">${TYPE_LABEL[v.type]}</span></div>
+    it.innerHTML = `<div class="lab">${v.valid ? "✅" : "⚠️"} ${shiftCodeOf(s.id)} · <span style="color:var(--accent)">${TYPE_LABEL[v.type]}</span></div>
       <div class="sub">${fmtMin(v.turnoStart)}–${fmtMin(v.turnoEnd)} · nastro ${fmtDur(v.nastroMin)} · ${s.corsaIds.length} corse · ≈€${v.costEuro}</div>`;
     it.addEventListener("click", () => {
       const p = WW.pos["shift:" + s.id]; if (!p) return;
@@ -635,8 +712,10 @@ function renderSidebar() {
     Intero: nastro/lavoro ≤ 8h00<br>
     Semiunico: interruz. 40′–2h59′ · ≤ 9h00<br>
     Spezzato: interruz. ≥ 3h00 · ≤ 10h30<br>
+    Sosta inoperosa: fermo in aeroporto &gt; 30′ · ≤ 9h15<br>
     Guida continuativa ≤ 4h30 (sosta 15′)<br>
-    Fuorilinea deposito↔P.za Cavour: 10′</div>`;
+    Fuorilinea deposito↔P.za Cavour: 10′<br>
+    Fuorilinea deposito↔Aeroporto: 30′</div>`;
   side.append(rec);
 }
 
@@ -669,28 +748,66 @@ function rowCells(c) {
   return wrap;
 }
 
-function withGaps(cs) {
-  const out = [];
-  cs.forEach((c, i) => {
-    if (i > 0) { const g = c.startMin - cs[i - 1].endMin; if (g >= 30) out.push({ gap: g }); }
-    out.push({ c });
-  });
-  return out;
+/* riga di gap tipizzata: sosta inoperosa / rientro deposito / interruzione.
+ * Le soste inoperose lunghe (≥ A/R deposito) sono cliccabili per scegliere il
+ * rientro in deposito (e viceversa). */
+function gapRow(s, g) {
+  const row = el("div", "ww-gap");
+  const fuoriRT = 2 * fuoriFor(LOC.APT);
+  // l'attesa avviene a locPrev, POI (se serve) il trasferimento a vuoto
+  const tf = g.transferMin > 0 ? ` + 🔄 trasf. a vuoto ${fmtDur(g.transferMin)} (${g.loc}→${g.locNext})` : "";
+  const setLabel = (txt) => { row.innerHTML = `<span class="ln"></span><span>${txt}</span><span class="ln"></span>`; };
+  if (g.kind === "sosta_inoperosa") {
+    row.classList.add("sosta");
+    const dur = g.transferMin > 0 ? g.idle : g.dur;
+    const hint = g.canDepot ? " · clic → rientro deposito" : "";
+    setLabel(`🅿️ sosta inoperosa ${fmtDur(dur)} (aeroporto)${tf}${hint}`);
+    if (g.canDepot) {
+      row.style.cursor = "pointer";
+      row.title = `Passa a rientro in deposito (+${fmtDur(fuoriRT)} di fuorilinea)`;
+      row.addEventListener("click", ev => { ev.stopPropagation(); s.gapModes = { ...(s.gapModes || {}), [g.key]: "deposito" }; renderWW(); });
+    }
+  } else if (g.kind === "deposito") {
+    row.classList.add("deposito");
+    setLabel(`🏠 rientro deposito · +${fmtDur(fuoriRT)} fuorilinea (assenza ${fmtDur(g.dur)}) · clic → sosta inoperosa`);
+    row.style.cursor = "pointer";
+    row.title = "Passa a sosta inoperosa in aeroporto";
+    row.addEventListener("click", ev => { ev.stopPropagation(); s.gapModes = { ...(s.gapModes || {}), [g.key]: "sosta" }; renderWW(); });
+  } else if (g.kind === "transfer") {
+    row.classList.add("transfer");
+    const wait = g.idle > 0 ? `attesa ${fmtDur(g.idle)}` : "";
+    setLabel(`${wait}${wait ? tf : tf.replace(/^ \+ /, "")}`);
+  } else {   // break
+    const dur = g.transferMin > 0 ? g.idle : g.dur;
+    setLabel(`interruzione ${fmtDur(dur)}${tf}`);
+  }
+  return row;
 }
 
 function shiftCard(s) {
-  const v = verifyTurno(s.corsaIds);
+  const v = verifyShift(s);
   const card = el("div", "ww-shift");
   const p = WW.pos["shift:" + s.id] || { x: 40, y: 20 };
   card.style.left = p.x + "px"; card.style.top = p.y + "px";
   card.dataset.wwshift = s.id;
 
   const head = el("div", "ww-shift-head");
-  head.append(el("span", "ww-shift-title", s.id));
+  const title = el("span", "ww-shift-title", shiftCodeOf(s.id)); title.title = `Codifica turno (${s.corsaIds.length} corse)`;
+  head.append(title);
   const badge = el("span", "ww-badge " + (v.valid ? "ok" : "bad"), v.valid ? "OK" : "⚠");
   head.append(badge);
-  head.append(el("span", "ww-shift-sub", `${TYPE_LABEL[v.type]} · ${fmtMin(v.turnoStart)}–${fmtMin(v.turnoEnd)} · nastro ${fmtDur(v.nastroMin)} · ≈€${v.costEuro}`));
+  head.append(el("span", "ww-shift-sub", `${fmtMin(v.turnoStart)}–${fmtMin(v.turnoEnd)} · nastro ${fmtDur(v.nastroMin)} · lavoro ${fmtDur(v.lavoroMin)} · ≈€${v.costEuro}`));
   const tools = el("div", "ww-shift-tools");
+  // menu OVERRIDE tipologia (Auto = classificazione automatica)
+  const typeSel = el("select", "ww-type-sel");
+  [["auto", `Auto: ${TYPE_LABEL[v.autoType]}`], ...TYPE_ORDER.map(t => [t, TYPE_LABEL[t]])].forEach(([val, lab]) => {
+    const o = el("option"); o.value = val; o.textContent = lab; typeSel.append(o);
+  });
+  typeSel.value = s.typeOverride || "auto";
+  typeSel.title = "Cambia manualmente la tipologia del turno (Auto = classificazione automatica)";
+  typeSel.addEventListener("mousedown", e => e.stopPropagation());
+  typeSel.addEventListener("change", () => { s.typeOverride = typeSel.value === "auto" ? null : typeSel.value; renderWW(); });
+  tools.append(typeSel);
   const spk = el("button", "icon-btn spk", "Spacchetta"); spk.title = "Sciogli il turno in corse libere";
   spk.addEventListener("mousedown", e => e.stopPropagation());
   spk.addEventListener("click", () => unpackShift(s.id));
@@ -700,22 +817,23 @@ function shiftCard(s) {
 
   makeDraggable(head, "shift:" + s.id, card);
 
+  // riga tipologia (mostra se è automatica o forzata)
+  const typeRow = el("div", "ww-typeline");
+  typeRow.innerHTML = `<b>${TYPE_LABEL[v.type]}</b>${v.overridden ? ' <span class="ovr">✎ forzato</span>' : " · automatico"}`;
+  card.append(typeRow);
+
   const rows = el("div", "ww-rows");
-  for (const item of withGaps(v.cs)) {
-    if (item.gap != null) {
-      const g = el("div", "ww-gap");
-      g.append(el("span", "ln"), el("span", "", `interruzione ${fmtDur(item.gap)}`), el("span", "ln"));
-      rows.append(g);
-    } else {
-      const c = item.c;
-      const r = el("div", "ww-row pickable dir-" + c.dir); if (WW.selected.has(c.id)) r.classList.add("sel");
-      r.append(rowCells(c));
-      r.addEventListener("click", ev => rowClick(ev, c.id));
-      r.addEventListener("contextmenu", ev => showCtx(ev, c));
-      startRowDrag(r, c, s.id);
-      rows.append(r);
-    }
-  }
+  const gapByIdx = {}; v.gapInfo.forEach(g => { gapByIdx[g.i] = g; });
+  v.cs.forEach((c, idx) => {
+    const g = gapByIdx[idx];
+    if (g && (g.kind === "sosta_inoperosa" || g.kind === "deposito" || g.kind === "break" || g.transferMin > 0)) rows.append(gapRow(s, g));
+    const r = el("div", "ww-row pickable dir-" + c.dir); if (WW.selected.has(c.id)) r.classList.add("sel");
+    r.append(rowCells(c));
+    r.addEventListener("click", ev => rowClick(ev, c.id));
+    r.addEventListener("contextmenu", ev => showCtx(ev, c));
+    startRowDrag(r, c, s.id);
+    rows.append(r);
+  });
   card.append(rows);
 
   if (!v.valid) { const vv = el("div", "ww-viol", "⚠ " + v.violations.join(" · ")); card.append(vv); }

@@ -40,8 +40,24 @@ Ispirata alla "Finestra di Lavoro" dei turni guida di TransitIntel:
   - **Intero (unico)**: nastro/lavoro ≤ 8h00, nessuna interruzione ≥ 40′;
   - **Semiunico**: interruzione 40′–2h59′, nastro/lavoro ≤ 9h00;
   - **Spezzato**: interruzione ≥ 3h00, nastro/lavoro ≤ 10h30;
+  - **Sosta inoperosa**: se l'autista resta fermo in **aeroporto > 30′** il gap è
+    *sosta inoperosa* (standby retribuito al 12% con strutture), nastro ≤ 9h15;
   - **RD 131**: guida continuativa ≤ 4h30 (reset con sosta ≥ 15′);
-  - **Fuorilinea** deposito Ancona ↔ Piazza Cavour = **10′** (aggiunto a inizio/fine turno).
+  - **Fuorilinea**: deposito Ancona ↔ **Piazza Cavour** = **10′**, deposito ↔
+    **Aeroporto** = **30′** (aggiunti a inizio/fine turno).
+- per ogni sosta inoperosa lunga si può scegliere, con un clic sul gap, il
+  **rientro in deposito** (che aggiunge il fuorilinea A/R e trasforma la sosta in
+  una vera interruzione);
+- quando due corse consecutive iniziano/finiscono in punti diversi, il bus fa un
+  **trasferimento a vuoto** (Aeroporto ↔ Piazza Cavour = **30′**), inserito
+  automaticamente e conteggiato nella guida;
+- l'operatore può **forzare la tipologia** del turno dal menu, se la
+  classificazione automatica non va bene.
+
+**Codifica dei turni**: `2 lettere del giorno` + `2 cifre` (**00–49** se il turno
+è di mattina, **50–99** se di pomeriggio) + una lettera finale **S** se il turno
+contiene una sola corsa andata/ritorno (≤ 2 corse) o **I** se ne contiene di più.
+Esempio: **`LU01S`** = turno di lunedì mattina con una sola andata/ritorno.
 
 ---
 
