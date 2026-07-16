@@ -1,8 +1,8 @@
 # =========================================================================
-# Flight Matrix — immagine Docker per il deploy su Coolify (o qualsiasi host)
+# Flight Matrix — Shuttle Aeroporto → immagine Docker (Coolify o qualsiasi host)
 # =========================================================================
-# Build:  docker build -t flight-matrix .
-# Run:    docker run -p 8501:8501 flight-matrix
+# Build:   docker build -t flight-matrix .
+# Run:     docker run -p 8501:8501 flight-matrix
 # Coolify: rileva automaticamente questo Dockerfile (build pack "Dockerfile").
 # =========================================================================
 
@@ -13,11 +13,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    # Streamlit: headless + ascolta su tutte le interfacce dentro il container
-    STREAMLIT_SERVER_HEADLESS=true \
-    STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
-    STREAMLIT_SERVER_PORT=8501 \
-    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    PORT=8501
 
 WORKDIR /app
 
@@ -35,11 +31,11 @@ USER appuser
 
 EXPOSE 8501
 
-# Health check nativo Streamlit (usato anche da Coolify/Traefik).
-# Usa urllib (già in stdlib) per non aggiungere curl all'immagine slim.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request,sys; \
-sys.exit(0 if urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=4).read().strip()==b'ok' else 1)"
+# Health check: endpoint applicativo GET /health (risponde "ok").
+# Usa urllib (stdlib) per non aggiungere curl all'immagine slim.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request,sys,os; \
+sys.exit(0 if urllib.request.urlopen('http://localhost:%s/health' % os.environ.get('PORT','8501'), timeout=4).read().strip()==b'ok' else 1)"
 
-# Avvio dell'app. Le opzioni server sono già fornite via env STREAMLIT_*.
-ENTRYPOINT ["streamlit", "run", "streamlit_app.py"]
+# Avvio: uvicorn serve sia l'API (/api/parse) sia la SPA statica.
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8501}"]

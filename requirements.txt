@@ -1,9 +1,10 @@
-# Dipendenze effettivamente usate dall'app (import in streamlit_app.py).
-# Versioni pinnate per build riproducibili su Coolify.
+# Dipendenze della web app (backend FastAPI + parser PDF).
+# Versioni pinnate per build riproducibili su Coolify/Docker.
 #
-# Nota: le vecchie dipendenze geo (folium, streamlit-folium, shapely, geopy,
-# geopandas) sono state rimosse perché non erano importate da nessuna parte:
-# appesantivano l'immagine Docker (GDAL & co.) senza essere usate.
-streamlit==1.59.2
-pandas==3.0.3
+# L'app NON usa più Streamlit: è una web app "normale" (backend FastAPI che
+# serve una SPA statica + endpoint /api/parse). Il parsing PDF resta in Python
+# (pdfplumber, robusto); pandas è stato rimosso (il parser restituisce dict).
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
 pdfplumber==0.11.10
+python-multipart==0.0.20
