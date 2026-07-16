@@ -23,10 +23,12 @@ App su <http://localhost:8501>.
 In alternativa, con Docker:
 
 ```bash
-docker compose up --build
-# oppure
 docker build -t flight-matrix . && docker run -p 8501:8501 flight-matrix
 ```
+
+> Con `docker compose` in locale: scommenta il blocco `ports` in
+> `docker-compose.yml` prima di lanciare `docker compose up --build`
+> (di default la porta è solo `expose`, per non pubblicarla sull'host su Coolify).
 
 ---
 
