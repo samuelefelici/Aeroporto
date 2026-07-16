@@ -72,17 +72,33 @@ Ispirata alla "Finestra di Lavoro" dei turni guida di TransitIntel:
 contiene una sola corsa andata/ritorno (≤ 2 corse) o **I** se ne contiene di più.
 Esempio: **`LU01S`** = turno di lunedì mattina con una sola andata/ritorno.
 
-## 💾 Salvataggio del lavoro
+## 💾 Salvataggio del lavoro (server + cache locale)
 
-Il lavoro è **salvato automaticamente** nel browser (`localStorage`): l'ultimo file
-importato (mese/anno + voli) viene ripristinato al riavvio, e lo stato della Finestra
-di Lavoro (turni, corse, posizioni) è salvato **per categoria di giorno**. Tornando
-alla matrice compare **Riprendi lavoro** per riaprire i turni dove li avevi lasciati;
-rigenerare le corse da capo chiede conferma prima di sovrascrivere.
+Il lavoro è **salvato automaticamente**. La fonte di verità è il **database**
+(persistenza server-side) quando disponibile, così i piani sono **condivisi tra
+dispositivi e colleghi**; il `localStorage` resta come **cache/fallback offline**.
 
-> Il salvataggio è locale al browser/dispositivo. Per un archivio condiviso servirebbe
-> una persistenza server-side (evoluzione futura); intanto l'**export CSV** dei turni
-> permette di portare fuori il risultato.
+- l'ultimo file importato (mese/anno + voli) e lo stato della Finestra di Lavoro
+  (turni, corse, posizioni) sono salvati **per progetto mensile** e **per categoria
+  di giorno**;
+- un **selettore «Progetti salvati»** permette di riaprire qualsiasi mese;
+- tornando alla matrice compare **Riprendi lavoro** per riaprire i turni dove li
+  avevi lasciati; rigenerare le corse da capo chiede conferma prima di sovrascrivere;
+- **Esporta turni** scarica comunque i turni in CSV.
+
+### Configurazione del database
+
+La persistenza usa la variabile d'ambiente **`DATABASE_URL`** (PostgreSQL, es.
+`postgresql://user:pass@host:5432/db`). Impostala nell'app (es. su Coolify).
+Le tabelle (`projects`, `works`) vengono create automaticamente all'avvio.
+
+Se `DATABASE_URL` non è impostata (o il DB è irraggiungibile), l'app **resta
+funzionante**: la persistenza server è disabilitata (endpoint `GET /api/persistence`
+→ `{ "enabled": false }`) e il frontend ricade sul `localStorage`. In locale, senza
+`DATABASE_URL`, viene usato un file **SQLite** (`data/app.db`).
+
+Endpoint di persistenza: `GET/PUT/DELETE /api/projects[/{year}/{month}]` e
+`GET/PUT/DELETE /api/works/{year}/{month}[/{weekday}]`.
 
 ---
 
@@ -146,7 +162,8 @@ a passi/larghezze diversi tra i file.
 
 | File | Descrizione |
 |------|-------------|
-| `app.py` | Backend FastAPI (endpoint `/api/parse`, `/health`, serve la SPA) |
+| `app.py` | Backend FastAPI (parse, health, persistenza, serve la SPA) |
+| `db.py` | Persistenza server-side (SQLAlchemy; Postgres via `DATABASE_URL`) |
 | `flight_parser.py` | Parser PDF (pdfplumber, restituisce dict — niente pandas) |
 | `static/index.html` | SPA: matrice, filtri, generazione corse, Finestra di Lavoro |
 | `static/app.js` | Logica frontend (matrice, corse, Finestra di Lavoro, normativa) |

@@ -156,35 +156,95 @@ const S = {
   rows: [],              // righe matrice del giorno corrente (dopo group, prima dei filtri)
   dates: [],             // colonne date del giorno corrente
   schengenByRoute: {},   // override utente arrivi
+  serverPersist: false,  // persistenza server-side disponibile
+  worksSummary: {},      // {weekday: n turni} del progetto corrente
 };
 
 const rowKey = (r) => `${r.flight}|${r.route}|${r.dir}`;
 
 const MONTH_IT = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"];
 
-/* ─────────────── Persistenza (localStorage) ─────────────── */
+/* ─────────────── Persistenza (server + cache localStorage) ───────────────
+ * Fonte di verità = server (DB) quando disponibile; altrimenti localStorage.
+ * Il localStorage è comunque sempre aggiornato come cache/fallback offline. */
 const LS = {
   project: "aeroporto.project.v1",
   work: (y, m, wd) => `aeroporto.work.v1.${y}-${String(m).padStart(2, "0")}.${wd}`,
 };
-function saveProject() {
-  try { localStorage.setItem(LS.project, JSON.stringify({ month: S.month, year: S.year, flights: S.flights, meta: S.meta })); } catch (e) { /* quota */ }
+
+async function detectPersistence() {
+  try { const r = await fetch("/api/persistence"); S.serverPersist = r.ok && !!(await r.json()).enabled; }
+  catch { S.serverPersist = false; }
+  return S.serverPersist;
+}
+
+/* ── progetti ── */
+function cacheProjectLocal() {
+  try { localStorage.setItem(LS.project, JSON.stringify({ month: S.month, year: S.year, flights: S.flights, meta: S.meta })); } catch { /* quota */ }
 }
 function loadProjectStored() {
   try { const raw = localStorage.getItem(LS.project); return raw ? JSON.parse(raw) : null; } catch { return null; }
 }
+async function saveProject() {
+  cacheProjectLocal();
+  if (S.serverPersist) {
+    try { await fetch(`/api/projects/${S.year}/${S.month}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ meta: S.meta, flights: S.flights }) }); } catch { /* offline: resta in cache */ }
+  }
+}
+async function listProjects() {
+  if (S.serverPersist) {
+    try { const r = await fetch("/api/projects"); if (r.ok) return (await r.json()).projects || []; } catch { /* fallback */ }
+  }
+  const p = loadProjectStored();
+  return p && p.month ? [{ year: p.year, month: p.month, meta: p.meta }] : [];
+}
+async function loadProjectData(year, month) {
+  if (S.serverPersist) {
+    try { const r = await fetch(`/api/projects/${year}/${month}`); if (r.ok) return await r.json(); } catch { /* fallback */ }
+  }
+  const p = loadProjectStored();
+  return (p && p.year === year && p.month === month) ? p : null;
+}
+async function deleteProjectRemote(year, month) {
+  if (S.serverPersist) { try { await fetch(`/api/projects/${year}/${month}`, { method: "DELETE" }); } catch { /* best-effort */ } }
+}
+
+/* ── lavori per categoria di giorno ── */
+function loadWorkLocal(weekday) {
+  try { const raw = localStorage.getItem(LS.work(S.year, S.month, weekday)); return raw ? JSON.parse(raw) : null; } catch { return null; }
+}
+async function loadWorksSummary() {
+  S.worksSummary = {};
+  if (S.serverPersist) {
+    try {
+      const r = await fetch(`/api/works/${S.year}/${S.month}`);
+      if (r.ok) { (await r.json()).works.forEach(w => { S.worksSummary[w.weekday] = w.shiftCount; }); return; }
+    } catch { /* fallback */ }
+  }
+  WEEKDAY_ORDER.forEach(wd => { const w = loadWorkLocal(wd); if (w) S.worksSummary[wd] = (w.shifts || []).length; });
+}
 function saveWork() {
   if (!WW.open || S.month == null) return;
   const state = { weekday: S.weekday, corse: [...WW.corse.values()], shifts: WW.shifts.map(s => ({ ...s })), loose: [...WW.loose], pos: WW.pos, seq: WW.seq };
-  try { localStorage.setItem(LS.work(S.year, S.month, S.weekday), JSON.stringify(state)); renderProjectBar(true); } catch (e) { /* quota */ }
+  // aggiornamenti SINCRONI (cache + riepilogo) così la UI è subito coerente
+  try { localStorage.setItem(LS.work(S.year, S.month, S.weekday), JSON.stringify(state)); } catch { /* quota */ }
+  S.worksSummary[S.weekday] = WW.shifts.length;
+  renderProjectBar(true);
+  // scrittura server asincrona (best-effort)
+  if (S.serverPersist) {
+    fetch(`/api/works/${S.year}/${S.month}/${S.weekday}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state }) }).catch(() => { /* offline */ });
+  }
 }
 let _saveWorkT = null;
 function scheduleSaveWork() { if (!WW.open || S.month == null) return; clearTimeout(_saveWorkT); _saveWorkT = setTimeout(saveWork, 500); }
-function loadWork(weekday) {
-  try { const raw = localStorage.getItem(LS.work(S.year, S.month, weekday)); return raw ? JSON.parse(raw) : null; } catch { return null; }
+async function loadWork(weekday) {
+  if (S.serverPersist) {
+    try { const r = await fetch(`/api/works/${S.year}/${S.month}/${weekday}`); if (r.ok) return (await r.json()).state; if (r.status === 404) return loadWorkLocal(weekday); } catch { /* fallback */ }
+  }
+  return loadWorkLocal(weekday);
 }
-function hasWork(weekday) { try { return !!localStorage.getItem(LS.work(S.year, S.month, weekday)); } catch { return false; } }
-function countWorkShifts(weekday) { const w = loadWork(weekday); return w && Array.isArray(w.shifts) ? w.shifts.length : 0; }
+function hasWork(weekday) { return Object.prototype.hasOwnProperty.call(S.worksSummary, weekday); }
+function countWorkShifts(weekday) { return S.worksSummary[weekday] || 0; }
 
 /* ─────────────── Upload / parse ─────────────── */
 const dropzone = $("#dropzone");
@@ -215,9 +275,11 @@ async function uploadPdf(file) {
     const data = await res.json();
     if (!data.flights.length) { st.className = "status err"; st.textContent = "Nessun volo PAX riconosciuto nel PDF."; return; }
     S.flights = data.flights; S.meta = data.meta; S.month = month; S.year = year;
-    st.className = "status ok"; st.textContent = `✔ ${data.meta.count} voli PAX su ${data.meta.days} giorni.`;
-    saveProject();
+    st.className = "status ok"; st.textContent = `✔ ${data.meta.count} voli PAX su ${data.meta.days} giorni${S.serverPersist ? " · salvato sul server" : ""}.`;
+    await saveProject();
+    await loadWorksSummary();
     initResults(data.meta);
+    refreshProjectPicker();
   } catch (e) {
     st.className = "status err"; st.textContent = "✗ " + e.message;
   }
@@ -338,8 +400,8 @@ function bindFilters() {
   $("#selectAllBtn").addEventListener("click", () => { visibleRows().forEach(r => S.selected.add(rowKey(r))); renderMatrix(); });
   $("#clearSelBtn").addEventListener("click", () => { S.selected.clear(); renderMatrix(); });
   $("#genCorseBtn").addEventListener("click", openGenDialog);
-  $("#resumeWorkBtn").addEventListener("click", () => {
-    const saved = loadWork(S.weekday);
+  $("#resumeWorkBtn").addEventListener("click", async () => {
+    const saved = await loadWork(S.weekday);
     if (!saved) { updateResumeButton(); return; }
     openWorkWindow(null, saved);
   });
@@ -1184,8 +1246,37 @@ function showCtx(ev, c) {
 }
 function hideCtx() { const m = $("#wwCtx"); if (m) m.remove(); }
 
+/* ─────────────── Selettore progetti ─────────────── */
+async function refreshProjectPicker() {
+  const wrap = $("#projectPickerWrap"); const sel = $("#projectPicker");
+  const projects = await listProjects();
+  if (!projects.length) { wrap.classList.add("hidden"); return; }
+  sel.innerHTML = "";
+  projects.forEach(p => {
+    const o = el("option"); o.value = `${p.year}-${p.month}`;
+    o.textContent = `${MONTH_IT[p.month - 1]} ${p.year}${p.meta && p.meta.count ? ` (${p.meta.count} voli)` : ""}`;
+    sel.append(o);
+  });
+  if (S.month != null) sel.value = `${S.year}-${S.month}`;
+  $("#ppNote").textContent = S.serverPersist ? "sincronizzati sul server" : "salvati in questo browser";
+  wrap.classList.remove("hidden");
+}
+
+async function loadAndShowProject(year, month) {
+  const data = await loadProjectData(year, month);
+  if (!data || !Array.isArray(data.flights) || !data.flights.length) { toast("Progetto non disponibile.", "err"); return; }
+  S.flights = data.flights; S.month = month; S.year = year;
+  S.meta = data.meta || { count: data.flights.length, days: new Set(data.flights.map(f => f.date)).size, start: null, end: null };
+  $("#impMonth").value = String(month); $("#impYear").value = String(year);
+  S.selected.clear();
+  cacheProjectLocal();
+  await loadWorksSummary();
+  initResults(S.meta);
+  refreshProjectPicker();
+}
+
 /* ─────────────── Avvio ─────────────── */
-(function init() {
+(async function init() {
   // popola mese/anno (default = data corrente del browser)
   const now = new Date();
   const mSel = $("#impMonth");
@@ -1193,23 +1284,27 @@ function hideCtx() { const m = $("#wwCtx"); if (m) m.remove(); }
   mSel.value = String(now.getMonth() + 1);
   $("#impYear").value = String(now.getFullYear());
 
-  // ripristina l'ultimo progetto salvato (persistenza tra sessioni)
-  const proj = loadProjectStored();
-  if (proj && Array.isArray(proj.flights) && proj.flights.length && proj.month) {
-    S.flights = proj.flights; S.meta = proj.meta || null; S.month = proj.month; S.year = proj.year;
-    mSel.value = String(proj.month); $("#impYear").value = String(proj.year);
-    const banner = $("#resumeBanner");
-    banner.classList.remove("hidden");
-    banner.innerHTML = `↩️ Ripreso l'ultimo file: <b>${MONTH_IT[proj.month - 1]} ${proj.year}</b> (${(proj.meta && proj.meta.count) || proj.flights.length} voli). <button class="btn ghost" id="clearProj">Rimuovi salvataggio</button>`;
-    $("#clearProj").addEventListener("click", () => {
-      if (!confirm("Rimuovere il file salvato e tutti i lavori associati (turni)?")) return;
-      try {
-        localStorage.removeItem(LS.project);
-        WEEKDAY_ORDER.forEach(wd => localStorage.removeItem(LS.work(proj.year, proj.month, wd)));
-      } catch { /* ignore */ }
-      location.reload();
-    });
-    const meta = S.meta || { count: proj.flights.length, days: new Set(proj.flights.map(f => f.date)).size, start: null, end: null };
-    initResults(meta);
+  await detectPersistence();
+
+  // handlers del selettore progetti
+  $("#projectPicker").addEventListener("change", e => {
+    const [y, m] = e.target.value.split("-").map(Number);
+    loadAndShowProject(y, m);
+  });
+  $("#deleteProjectBtn").addEventListener("click", async () => {
+    if (S.month == null) return;
+    if (!confirm(`Eliminare il progetto ${MONTH_IT[S.month - 1]} ${S.year} e tutti i suoi turni?`)) return;
+    await deleteProjectRemote(S.year, S.month);
+    try { localStorage.removeItem(LS.project); WEEKDAY_ORDER.forEach(wd => localStorage.removeItem(LS.work(S.year, S.month, wd))); } catch { /* ignore */ }
+    location.reload();
+  });
+
+  // auto-carica l'ultimo progetto (preferendo quello già usato in questo browser)
+  const projects = await listProjects();
+  if (projects.length) {
+    const local = loadProjectStored();
+    let pick = projects[0];
+    if (local) { const m = projects.find(p => p.year === local.year && p.month === local.month); if (m) pick = m; }
+    await loadAndShowProject(pick.year, pick.month);
   }
 })();

@@ -13,3 +13,6 @@ venv/
 
 # Dati locali
 *.pdf
+
+# SQLite di fallback (persistenza locale senza DATABASE_URL)
+data/
