@@ -1,17 +1,26 @@
-# docker-compose per Coolify (build pack "Docker Compose") o per test locale.
+# docker-compose per Coolify (build pack "Docker Compose").
 #
-# Locale:   docker compose up --build   ->  http://localhost:8501
-# Coolify:  seleziona "Docker Compose" e punta a questo file; l'esposizione
-#           HTTPS/dominio la gestisce Coolify tramite Traefik sulla porta 8501.
+# Coolify: seleziona "Docker Compose" e punta a questo file. Il routing e
+#          l'HTTPS li gestisce Coolify tramite Traefik sulla rete interna
+#          Docker, raggiungendo la porta 8501 del container.
+#
+# Test locale: scommenta il blocco `ports` qui sotto e lancia
+#              `docker compose up --build`  ->  http://localhost:8501
+#              (in alternativa usa il Dockerfile: `docker run -p 8501:8501 ...`).
 
 services:
   flight-matrix:
     build:
       context: .
       dockerfile: Dockerfile
-    # Coolify inietta il proprio proxy: internamente il servizio resta su 8501.
-    ports:
-      - "8501:8501"
+    # `expose` rende la porta raggiungibile solo dal proxy interno di Coolify
+    # (Traefik), senza pubblicarla sull'host: niente conflitti di porta né
+    # accesso in HTTP non cifrato che scavalca il dominio/HTTPS.
+    expose:
+      - "8501"
+    # --- Solo per test locale: scommenta per pubblicare la porta sull'host ---
+    # ports:
+    #   - "8501:8501"
     environment:
       STREAMLIT_SERVER_HEADLESS: "true"
       STREAMLIT_SERVER_ADDRESS: "0.0.0.0"

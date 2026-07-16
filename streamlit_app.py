@@ -2,7 +2,8 @@
 
 """
 App Streamlit per:
-1. Caricare un PDF con orari voli (qualsiasi mese, tipo Feb/Mar 2026).
+1. Caricare un PDF con orari voli (qualsiasi mese: le colonne dei giorni
+   vengono rilevate dinamicamente, non serve un mese specifico).
 2. Parsare i voli PAX, anche quando un giorno è spezzato su più tabelle / pagine.
 3. Raggruppare per giorno della settimana.
 4. Visualizzare una matrice voli × date con interfaccia curata e filtri.
@@ -79,7 +80,26 @@ def _median(values: List[float]) -> float:
     return 0.5 * (vals[mid - 1] + vals[mid])
 
 
-def _detect_day_columns(pdf, tol: float = 45.0) -> List[float]:
+def _extract_tables_by_page(pdf) -> List[List[dict]]:
+    """
+    Estrae UNA SOLA VOLTA le tabelle di ogni pagina (l'operazione più costosa
+    di pdfplumber). Restituisce, per pagina, una lista di dict con bbox e righe,
+    così che rilevamento colonne e parsing possano riusarle senza ri-estrarre.
+    """
+    pages_tables: List[List[dict]] = []
+    for page in pdf.pages:
+        page_tables: List[dict] = []
+        for t in page.find_tables():
+            rows = t.extract()
+            if not rows:
+                continue
+            x0, y0, x1, y1 = t.bbox
+            page_tables.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1, "rows": rows})
+        pages_tables.append(page_tables)
+    return pages_tables
+
+
+def _detect_day_columns(pages_tables: List[List[dict]], tol: float = 45.0) -> List[float]:
     """
     Rileva i centri (x) delle 7 colonne "giorno" a partire dalle tabelle
     che iniziano con un'intestazione di data (es. "Wed 15 Apr 2026").
@@ -94,19 +114,26 @@ def _detect_day_columns(pdf, tol: float = 45.0) -> List[float]:
     Restituisce la lista ordinata dei centri-x delle colonne (bordo sinistro
     delle tabelle-giorno, molto stabile tra le pagine).
     """
-    lefts: List[float] = []
-    for page in pdf.pages:
-        for t in page.find_tables():
-            rows = t.extract()
+    # candidati (bordo sinistro, larghezza) delle tabelle con intestazione data
+    candidates: List[tuple] = []
+    for page_tables in pages_tables:
+        for tbl in page_tables:
+            rows = tbl["rows"]
             first_cell = (rows[0][0] or "").strip() if rows and rows[0] else ""
             if DAY_PATTERN.match(first_cell):
-                lefts.append(t.bbox[0])
+                candidates.append((tbl["x0"], tbl["x1"] - tbl["x0"]))
 
+    if not candidates:
+        return []
+
+    # scarta eventuali intestazioni "blob" anomale (larghe più colonne): un
+    # header di giorno è stretto, quindi teniamo solo le larghezze ~mediane
+    med_w = _median([w for _, w in candidates])
+    lefts = sorted(x0 for x0, w in candidates if med_w == 0 or w <= med_w * 1.8)
     if not lefts:
         return []
 
     # clustering per prossimità sui bordi sinistri (ordinati)
-    lefts.sort()
     clusters: List[List[float]] = [[lefts[0]]]
     for x in lefts[1:]:
         if x - clusters[-1][-1] <= tol:
@@ -163,8 +190,11 @@ def parse_pdf_to_flights_df(file_obj: io.BytesIO) -> pd.DataFrame:
     records: List[dict] = []
 
     with pdfplumber.open(file_obj) as pdf:
+        # estrai le tabelle una sola volta e riusale per rilevamento e parsing
+        pages_tables = _extract_tables_by_page(pdf)
+
         # centri delle colonne-giorno rilevati dalle intestazioni di data
-        centers = _detect_day_columns(pdf)
+        centers = _detect_day_columns(pages_tables)
         if not centers:
             return pd.DataFrame(columns=DF_COLUMNS)
 
@@ -183,15 +213,15 @@ def parse_pdf_to_flights_df(file_obj: io.BytesIO) -> pd.DataFrame:
 
         # scorri tutte le pagine, dall'alto in basso (le continuazioni in cima
         # alla pagina vengono processate prima delle nuove intestazioni sotto)
-        for page in pdf.pages:
-            tables = sorted(page.find_tables(), key=lambda t: (t.bbox[1], t.bbox[0]))
+        for page_tables in pages_tables:
+            tables = sorted(page_tables, key=lambda tb: (tb["y0"], tb["x0"]))
 
-            for t in tables:
-                rows = t.extract()
+            for tbl in tables:
+                rows = tbl["rows"]
                 if not rows:
                     continue
 
-                x0, _, x1, _ = t.bbox
+                x0, x1 = tbl["x0"], tbl["x1"]
 
                 # scarta tabelle spurie che coprono più colonne (blob ai bordi pagina)
                 if (x1 - x0) > pitch * 1.5:
