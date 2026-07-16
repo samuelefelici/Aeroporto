@@ -10,19 +10,22 @@ Avvio locale:
     uvicorn app:app --host 0.0.0.0 --port 8501
 
 Endpoint:
-    GET  /               → SPA
-    GET  /health         → healthcheck ("ok")
-    POST /api/parse      → multipart PDF → { flights: [...], meta: {...} }
+    GET  /                                   → SPA
+    GET  /health                             → healthcheck ("ok")
+    POST /api/parse                          → multipart PDF → { flights, meta }
+    GET  /api/persistence                    → { enabled: bool }
+    GET/PUT/DELETE /api/projects[/{y}/{m}]   → progetti mensili (persistenza)
+    GET/PUT/DELETE /api/works/{y}/{m}[/{wd}] → lavori per categoria di giorno
 """
 
 from pathlib import Path
+from typing import Any, Dict, Optional
 
-from typing import Optional
-
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
+import db
 from flight_parser import parse_pdf_to_flights
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -31,13 +34,27 @@ STATIC_DIR = BASE_DIR / "static"
 # Limite upload lato applicazione (i PDF orari sono piccoli): 25 MB.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-app = FastAPI(title="Flight Matrix — Shuttle Aeroporto", version="2.0.0")
+app = FastAPI(title="Flight Matrix — Shuttle Aeroporto", version="3.0.0")
+
+# Inizializza il DB all'avvio (non solleva: se assente, persistenza disabilitata).
+db.init_db()
+
+
+def _require_db() -> None:
+    if not db.enabled():
+        raise HTTPException(status_code=503, detail="Persistenza server non disponibile.")
 
 
 @app.get("/health", response_class=PlainTextResponse)
 def health() -> str:
     """Healthcheck usato da Docker/Coolify."""
     return "ok"
+
+
+@app.get("/api/persistence")
+def persistence_status() -> Dict[str, Any]:
+    """Indica al frontend se la persistenza server-side è disponibile."""
+    return {"enabled": db.enabled()}
 
 
 @app.post("/api/parse")
@@ -71,6 +88,73 @@ async def parse(
         "end": dates[-1] if dates else None,
     }
     return JSONResponse({"flights": flights, "meta": meta})
+
+
+# ══════════════ Persistenza: progetti mensili ══════════════
+
+@app.get("/api/projects")
+def api_list_projects() -> Dict[str, Any]:
+    _require_db()
+    return {"projects": db.list_projects()}
+
+
+@app.get("/api/projects/{year}/{month}")
+def api_get_project(year: int, month: int) -> Dict[str, Any]:
+    _require_db()
+    proj = db.get_project(year, month)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Progetto non trovato.")
+    return proj
+
+
+@app.put("/api/projects/{year}/{month}")
+def api_put_project(year: int, month: int, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    _require_db()
+    if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+        raise HTTPException(status_code=400, detail="Mese/anno non validi.")
+    db.upsert_project(year, month, payload.get("meta"), payload.get("flights"))
+    return {"ok": True}
+
+
+@app.delete("/api/projects/{year}/{month}")
+def api_delete_project(year: int, month: int) -> Dict[str, Any]:
+    _require_db()
+    db.delete_project(year, month)
+    return {"ok": True}
+
+
+# ══════════════ Persistenza: lavori per categoria di giorno ══════════════
+
+@app.get("/api/works/{year}/{month}")
+def api_list_works(year: int, month: int) -> Dict[str, Any]:
+    _require_db()
+    return {"works": db.list_works(year, month)}
+
+
+@app.get("/api/works/{year}/{month}/{weekday}")
+def api_get_work(year: int, month: int, weekday: str) -> Dict[str, Any]:
+    _require_db()
+    w = db.get_work(year, month, weekday)
+    if not w:
+        raise HTTPException(status_code=404, detail="Lavoro non trovato.")
+    return w
+
+
+@app.put("/api/works/{year}/{month}/{weekday}")
+def api_put_work(year: int, month: int, weekday: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    _require_db()
+    state = payload.get("state")
+    shifts = state.get("shifts") if isinstance(state, dict) else None
+    shift_count = len(shifts) if isinstance(shifts, list) else 0
+    db.upsert_work(year, month, weekday, state, shift_count)
+    return {"ok": True}
+
+
+@app.delete("/api/works/{year}/{month}/{weekday}")
+def api_delete_work(year: int, month: int, weekday: str) -> Dict[str, Any]:
+    _require_db()
+    db.delete_work(year, month, weekday)
+    return {"ok": True}
 
 
 # Static SPA (montato per ultimo così /api/* e /health hanno priorità).

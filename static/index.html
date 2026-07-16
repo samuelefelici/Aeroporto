@@ -30,6 +30,11 @@
         <label>Mese <select id="impMonth"></select></label>
         <label>Anno <input type="number" id="impYear" min="2000" max="2100" step="1" /></label>
       </div>
+      <div class="project-picker hidden" id="projectPickerWrap">
+        <label>📂 Progetti salvati <select id="projectPicker"></select></label>
+        <button class="btn ghost" id="deleteProjectBtn">🗑 Elimina progetto</button>
+        <span class="pp-note" id="ppNote"></span>
+      </div>
       <label class="dropzone" id="dropzone">
         <input type="file" id="fileInput" accept="application/pdf" hidden />
         <span class="dz-icon">📄</span>

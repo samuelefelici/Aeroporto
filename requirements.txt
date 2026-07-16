@@ -8,3 +8,7 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pdfplumber==0.11.10
 python-multipart==0.0.20
+# Persistenza server-side (progetti + turni). Postgres via DATABASE_URL
+# (driver psycopg v3); in assenza di DATABASE_URL ricade su SQLite locale.
+sqlalchemy==2.0.51
+psycopg[binary]==3.3.4
