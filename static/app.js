@@ -29,6 +29,11 @@ const FUORILINEA = {
 // In presenza di strutture (terminal) il contributo all'orario è 0.12 (= 12%).
 const SOSTA = { thresholdMin: 30, coeff: 0.12 };
 
+// Trasferimento a vuoto Aeroporto ↔ Piazza Cavour (minuti): inserito quando due
+// corse consecutive iniziano/finiscono in punti diversi e il bus deve
+// riposizionarsi vuoto per ripartire con l'altra corsa.
+const TRANSFER_EMPTY = 30;
+
 // Normativa EXTRAURBANO (da TransitIntel/optimizer-rules.ts — Accordo Quadro 18/05/2012)
 const RULES = {
   intero:          { maxNastro: 480, maxLavoro: 480 },
@@ -450,45 +455,52 @@ function verifyTurno(ids, opts = {}) {
   let guida = preF + postF + cs.reduce((s, c) => s + (c.endMin - c.startMin), 0);
   let unpaid = 0, maxRealBreak = 0, hasSosta = false;
   const gapInfo = [];
+  let run = preF + (cs[0].endMin - cs[0].startMin), maxCont = 0;   // guida continuativa (RD131)
+
   for (let i = 1; i < cs.length; i++) {
-    const g = cs[i].startMin - cs[i - 1].endMin;
-    if (g <= 0) continue;
-    const loc = cs[i - 1].to;                 // dove l'autista resta fermo
-    const key = cs[i - 1].id + ">" + cs[i].id;
-    const airportSosta = loc === LOC.APT && g > SOSTA.thresholdMin;
-    const canDepot = airportSosta && g >= fuoriRT;   // il rientro in deposito è fattibile solo se c'è tempo (≥60')
+    const c0 = cs[i - 1], c1 = cs[i];
+    const g = c1.startMin - c0.endMin;
+    if (g <= 0) { run += (c1.endMin - c1.startMin); continue; }
+    const locPrev = c0.to, locNext = c1.from;
+    const key = c0.id + ">" + c1.id;
     const mode = gapModes[key];
+    let kind, transferMin = 0, idle = g, breaksCont = false, canDepot = false;
 
-    let kind;
-    if (mode === "deposito" && canDepot) {
-      kind = "deposito";
-      guida += fuoriRT;                        // A/R deposito = guida (fuorilinea)
-      unpaid += Math.max(0, g - fuoriRT);      // attesa in deposito non retribuita
-      maxRealBreak = Math.max(maxRealBreak, g);
-    } else if (airportSosta) {                 // sosta inoperosa (default in aeroporto)
-      kind = "sosta_inoperosa";
-      hasSosta = true;
-      unpaid += g * (1 - SOSTA.coeff);         // quota non retribuita
-    } else if (g >= RULES.semiunico.intMin) {  // vera interruzione (fuori aeroporto)
-      kind = "break";
-      unpaid += g;
-      maxRealBreak = Math.max(maxRealBreak, g);
+    if (locPrev !== locNext) {
+      // trasferimento a vuoto obbligatorio (il bus deve riposizionarsi)
+      transferMin = TRANSFER_EMPTY;
+      idle = g - transferMin;                  // attesa (a locPrev) prima del trasferimento
+      if (idle < 0) { violations.push(`Trasferimento a vuoto ${fmtDur(TRANSFER_EMPTY)} incompatibile col gap ${fmtDur(g)} (${c0.flight}·${c1.flight})`); idle = 0; }
+      guida += transferMin;
+      if (locPrev === LOC.APT && idle > SOSTA.thresholdMin) {
+        kind = "sosta_inoperosa"; hasSosta = true; unpaid += idle * (1 - SOSTA.coeff); breaksCont = true;
+      } else if (idle >= RULES.semiunico.intMin) {
+        kind = "break"; unpaid += idle; maxRealBreak = Math.max(maxRealBreak, idle); breaksCont = true;
+      } else {
+        kind = "transfer"; breaksCont = idle >= RULES.rd131.sostaMinima;
+      }
     } else {
-      kind = "wait";                           // breve attesa a capolinea (retribuita)
+      const airportSosta = locPrev === LOC.APT && g > SOSTA.thresholdMin;
+      canDepot = airportSosta && g >= fuoriRT;   // rientro in deposito fattibile solo se c'è tempo (≥60')
+      if (mode === "deposito" && canDepot) {
+        kind = "deposito"; guida += fuoriRT; unpaid += Math.max(0, g - fuoriRT); maxRealBreak = Math.max(maxRealBreak, g); breaksCont = true;
+      } else if (airportSosta) {
+        kind = "sosta_inoperosa"; hasSosta = true; unpaid += g * (1 - SOSTA.coeff); breaksCont = true;
+      } else if (g >= RULES.semiunico.intMin) {
+        kind = "break"; unpaid += g; maxRealBreak = Math.max(maxRealBreak, g); breaksCont = true;
+      } else {
+        kind = "wait"; breaksCont = g >= RULES.rd131.sostaMinima;
+      }
     }
-    gapInfo.push({ i, key, dur: g, kind, loc, canDepot });
-  }
-
-  const lavoro = Math.round(nastro - unpaid);
-
-  // guida continuativa (RD131): reset quando una sosta ≥ sostaMinima
-  let run = preF + (cs[0].endMin - cs[0].startMin), maxCont = 0;
-  for (let i = 1; i < cs.length; i++) {
-    const gap = cs[i].startMin - cs[i - 1].endMin;
-    if (gap >= RULES.rd131.sostaMinima) { maxCont = Math.max(maxCont, run); run = 0; }
-    run += (cs[i].endMin - cs[i].startMin);
+    // guida continuativa: la sosta/interruzione resetta; il trasferimento è guida
+    // contigua alla corsa seguente
+    if (breaksCont) { maxCont = Math.max(maxCont, run); run = 0; }
+    run += transferMin + (c1.endMin - c1.startMin);
+    gapInfo.push({ i, key, dur: g, kind, loc: locPrev, locNext, transferMin, idle, canDepot });
   }
   run += postF; maxCont = Math.max(maxCont, run);
+
+  const lavoro = Math.round(nastro - unpaid);
 
   // classificazione automatica: una vera interruzione domina; altrimenti la
   // sosta inoperosa; altrimenti turno intero
@@ -575,6 +587,23 @@ function orderLoose(ids) {
 }
 function freeShiftSpot(i) { return { x: 40 + (i % 3) * 540, y: 20 + Math.floor(i / 3) * 300 }; }
 
+/* codifica turno: 2 lettere del giorno + 2 cifre (00–49 mattina / 50–99
+ * pomeriggio, in base all'inizio del turno) + lettera finale S (1 corsa A/R,
+ * cioè ≤ 2 corse) oppure I (più corse). Es. LU01S. La numerazione è progressiva
+ * per fascia (mattina/pomeriggio), calcolata su tutti i turni. */
+function computeShiftCodes() {
+  const day2 = (WW.dayLabel || "XX").slice(0, 2).toUpperCase();
+  const rows = WW.shifts.map(s => ({ id: s.id, start: verifyShift(s).turnoStart, n: s.corsaIds.length }));
+  const morning = rows.filter(r => r.start < 720).sort((a, b) => a.start - b.start);
+  const afternoon = rows.filter(r => r.start >= 720).sort((a, b) => a.start - b.start);
+  const codes = {};
+  const mk = (r, num) => `${day2}${String(num).padStart(2, "0")}${r.n <= 2 ? "S" : "I"}`;
+  morning.forEach((r, i) => { codes[r.id] = mk(r, Math.min(49, i)); });
+  afternoon.forEach((r, i) => { codes[r.id] = mk(r, Math.min(99, 50 + i)); });
+  return codes;
+}
+function shiftCodeOf(id) { return (WW.shiftCodes && WW.shiftCodes[id]) || id; }
+
 /* ── azioni turni ── */
 function repack() {
   const ids = [...WW.selected];
@@ -592,7 +621,7 @@ function repack() {
   WW.pos["shift:" + nid] = freeShiftSpot(WW.shifts.length - 1);
   WW.selected.clear();
   renderWW();
-  toast(`Turno guida ${nid} creato · ${TYPE_LABEL[v.type]}${v.valid ? "" : " ⚠ con violazioni"}`, v.valid ? "ok" : "err");
+  toast(`Turno guida ${shiftCodeOf(nid)} creato · ${TYPE_LABEL[v.type]}${v.valid ? "" : " ⚠ con violazioni"}`, v.valid ? "ok" : "err");
 }
 
 function unpackShift(id, doRender = true) {
@@ -645,6 +674,7 @@ function renderWW() {
   $("#wwRepack").textContent = `📦 Rimpacchetta${WW.selected.size ? ` (${WW.selected.size})` : ""}`;
   $("#wwUnpackAll").disabled = WW.shifts.length === 0;
 
+  WW.shiftCodes = computeShiftCodes();
   renderSidebar();
   renderCanvas();
 }
@@ -667,7 +697,7 @@ function renderSidebar() {
   verified.forEach(({ s, v }) => {
     const it = el("div", "ww-side-item");
     it.style.cursor = "pointer";
-    it.innerHTML = `<div class="lab">${v.valid ? "✅" : "⚠️"} ${s.id} · <span style="color:var(--accent)">${TYPE_LABEL[v.type]}</span></div>
+    it.innerHTML = `<div class="lab">${v.valid ? "✅" : "⚠️"} ${shiftCodeOf(s.id)} · <span style="color:var(--accent)">${TYPE_LABEL[v.type]}</span></div>
       <div class="sub">${fmtMin(v.turnoStart)}–${fmtMin(v.turnoEnd)} · nastro ${fmtDur(v.nastroMin)} · ${s.corsaIds.length} corse · ≈€${v.costEuro}</div>`;
     it.addEventListener("click", () => {
       const p = WW.pos["shift:" + s.id]; if (!p) return;
@@ -724,10 +754,14 @@ function rowCells(c) {
 function gapRow(s, g) {
   const row = el("div", "ww-gap");
   const fuoriRT = 2 * fuoriFor(LOC.APT);
+  // l'attesa avviene a locPrev, POI (se serve) il trasferimento a vuoto
+  const tf = g.transferMin > 0 ? ` + 🔄 trasf. a vuoto ${fmtDur(g.transferMin)} (${g.loc}→${g.locNext})` : "";
+  const setLabel = (txt) => { row.innerHTML = `<span class="ln"></span><span>${txt}</span><span class="ln"></span>`; };
   if (g.kind === "sosta_inoperosa") {
     row.classList.add("sosta");
+    const dur = g.transferMin > 0 ? g.idle : g.dur;
     const hint = g.canDepot ? " · clic → rientro deposito" : "";
-    row.innerHTML = `<span class="ln"></span><span>🅿️ sosta inoperosa ${fmtDur(g.dur)} (aeroporto)${hint}</span><span class="ln"></span>`;
+    setLabel(`🅿️ sosta inoperosa ${fmtDur(dur)} (aeroporto)${tf}${hint}`);
     if (g.canDepot) {
       row.style.cursor = "pointer";
       row.title = `Passa a rientro in deposito (+${fmtDur(fuoriRT)} di fuorilinea)`;
@@ -735,12 +769,17 @@ function gapRow(s, g) {
     }
   } else if (g.kind === "deposito") {
     row.classList.add("deposito");
-    row.innerHTML = `<span class="ln"></span><span>🏠 rientro deposito · +${fmtDur(fuoriRT)} fuorilinea (assenza ${fmtDur(g.dur)}) · clic → sosta inoperosa</span><span class="ln"></span>`;
+    setLabel(`🏠 rientro deposito · +${fmtDur(fuoriRT)} fuorilinea (assenza ${fmtDur(g.dur)}) · clic → sosta inoperosa`);
     row.style.cursor = "pointer";
     row.title = "Passa a sosta inoperosa in aeroporto";
     row.addEventListener("click", ev => { ev.stopPropagation(); s.gapModes = { ...(s.gapModes || {}), [g.key]: "sosta" }; renderWW(); });
-  } else {
-    row.innerHTML = `<span class="ln"></span><span>interruzione ${fmtDur(g.dur)}</span><span class="ln"></span>`;
+  } else if (g.kind === "transfer") {
+    row.classList.add("transfer");
+    const wait = g.idle > 0 ? `attesa ${fmtDur(g.idle)}` : "";
+    setLabel(`${wait}${wait ? tf : tf.replace(/^ \+ /, "")}`);
+  } else {   // break
+    const dur = g.transferMin > 0 ? g.idle : g.dur;
+    setLabel(`interruzione ${fmtDur(dur)}${tf}`);
   }
   return row;
 }
@@ -753,7 +792,8 @@ function shiftCard(s) {
   card.dataset.wwshift = s.id;
 
   const head = el("div", "ww-shift-head");
-  head.append(el("span", "ww-shift-title", s.id));
+  const title = el("span", "ww-shift-title", shiftCodeOf(s.id)); title.title = `Codifica turno (${s.corsaIds.length} corse)`;
+  head.append(title);
   const badge = el("span", "ww-badge " + (v.valid ? "ok" : "bad"), v.valid ? "OK" : "⚠");
   head.append(badge);
   head.append(el("span", "ww-shift-sub", `${fmtMin(v.turnoStart)}–${fmtMin(v.turnoEnd)} · nastro ${fmtDur(v.nastroMin)} · lavoro ${fmtDur(v.lavoroMin)} · ≈€${v.costEuro}`));
@@ -786,7 +826,7 @@ function shiftCard(s) {
   const gapByIdx = {}; v.gapInfo.forEach(g => { gapByIdx[g.i] = g; });
   v.cs.forEach((c, idx) => {
     const g = gapByIdx[idx];
-    if (g && (g.kind === "sosta_inoperosa" || g.kind === "deposito" || g.kind === "break")) rows.append(gapRow(s, g));
+    if (g && (g.kind === "sosta_inoperosa" || g.kind === "deposito" || g.kind === "break" || g.transferMin > 0)) rows.append(gapRow(s, g));
     const r = el("div", "ww-row pickable dir-" + c.dir); if (WW.selected.has(c.id)) r.classList.add("sel");
     r.append(rowCells(c));
     r.addEventListener("click", ev => rowClick(ev, c.id));

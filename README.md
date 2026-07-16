@@ -48,8 +48,16 @@ Ispirata alla "Finestra di Lavoro" dei turni guida di TransitIntel:
 - per ogni sosta inoperosa lunga si può scegliere, con un clic sul gap, il
   **rientro in deposito** (che aggiunge il fuorilinea A/R e trasforma la sosta in
   una vera interruzione);
+- quando due corse consecutive iniziano/finiscono in punti diversi, il bus fa un
+  **trasferimento a vuoto** (Aeroporto ↔ Piazza Cavour = **30′**), inserito
+  automaticamente e conteggiato nella guida;
 - l'operatore può **forzare la tipologia** del turno dal menu, se la
   classificazione automatica non va bene.
+
+**Codifica dei turni**: `2 lettere del giorno` + `2 cifre` (**00–49** se il turno
+è di mattina, **50–99** se di pomeriggio) + una lettera finale **S** se il turno
+contiene una sola corsa andata/ritorno (≤ 2 corse) o **I** se ne contiene di più.
+Esempio: **`LU01S`** = turno di lunedì mattina con una sola andata/ritorno.
 
 ---
 

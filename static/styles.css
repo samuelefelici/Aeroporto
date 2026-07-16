@@ -248,6 +248,8 @@ table.matrix td.ad-A { color: var(--arr); font-weight: 700; } table.matrix td.ad
 .ww-gap.sosta .ln { border-color: rgba(103,232,249,.4); }
 .ww-gap.deposito { color: #fdba74; }
 .ww-gap.deposito .ln { border-color: rgba(253,186,116,.4); }
+.ww-gap.transfer { color: #c4b5fd; }
+.ww-gap.transfer .ln { border-color: rgba(196,181,253,.4); }
 .ww-gap[style*="cursor: pointer"]:hover { color: #fff; }
 
 /* menu override tipologia + riga tipologia */
