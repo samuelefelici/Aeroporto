@@ -25,6 +25,11 @@
           <li>apre la <strong>Finestra di Lavoro</strong> per comporre i <strong>turni guida</strong> (normativa extraurbano).</li>
         </ul>
       </div>
+      <div class="import-period">
+        <span class="ip-label">📅 Ogni file è mensile — scegli mese e anno:</span>
+        <label>Mese <select id="impMonth"></select></label>
+        <label>Anno <input type="number" id="impYear" min="2000" max="2100" step="1" /></label>
+      </div>
       <label class="dropzone" id="dropzone">
         <input type="file" id="fileInput" accept="application/pdf" hidden />
         <span class="dz-icon">📄</span>
@@ -32,15 +37,17 @@
         <span class="dz-hint">Layout settimanale: colonne Flight / Route / A/D / Type / ETA / ETD</span>
       </label>
       <div id="uploadStatus" class="status"></div>
+      <div id="resumeBanner" class="resume-banner hidden"></div>
     </section>
 
     <!-- ─── STEP 2 · MATRICE + FILTRI ─── -->
     <section id="resultsCard" class="card hidden">
+      <div class="project-bar" id="projectBar"></div>
       <div class="metrics" id="metrics"></div>
 
       <div class="controls">
         <div class="control">
-          <label>Giorno della settimana</label>
+          <label>Categoria di giorno</label>
           <select id="weekdaySelect"></select>
         </div>
         <div class="control">
@@ -60,6 +67,9 @@
           </div>
         </div>
       </div>
+
+      <!-- GIORNI DELLA CATEGORIA -->
+      <div class="day-chips" id="dayChips"></div>
 
       <!-- FASCE ORARIE -->
       <div class="slots">
@@ -92,6 +102,7 @@
           <button id="selectAllBtn" class="btn ghost">☑ Seleziona tutti (filtrati)</button>
           <button id="clearSelBtn" class="btn ghost">☐ Deseleziona</button>
           <span id="selCount" class="sel-count">0 selezionati</span>
+          <button id="resumeWorkBtn" class="btn" style="display:none"></button>
           <button id="genCorseBtn" class="btn primary" disabled>🚌 Genera corse</button>
         </div>
       </div>

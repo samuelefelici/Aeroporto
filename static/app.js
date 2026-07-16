@@ -146,6 +146,9 @@ function classifySchengen(route) {
 /* ─────────────── Stato globale ─────────────── */
 const S = {
   flights: [],        // record dal backend
+  meta: null,
+  month: null,        // mese del file (1-12)
+  year: null,         // anno del file
   weekday: null,
   adFilter: "all",
   slot: { from: 0, to: 1439 },
@@ -156,6 +159,32 @@ const S = {
 };
 
 const rowKey = (r) => `${r.flight}|${r.route}|${r.dir}`;
+
+const MONTH_IT = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"];
+
+/* ─────────────── Persistenza (localStorage) ─────────────── */
+const LS = {
+  project: "aeroporto.project.v1",
+  work: (y, m, wd) => `aeroporto.work.v1.${y}-${String(m).padStart(2, "0")}.${wd}`,
+};
+function saveProject() {
+  try { localStorage.setItem(LS.project, JSON.stringify({ month: S.month, year: S.year, flights: S.flights, meta: S.meta })); } catch (e) { /* quota */ }
+}
+function loadProjectStored() {
+  try { const raw = localStorage.getItem(LS.project); return raw ? JSON.parse(raw) : null; } catch { return null; }
+}
+function saveWork() {
+  if (!WW.open || S.month == null) return;
+  const state = { weekday: S.weekday, corse: [...WW.corse.values()], shifts: WW.shifts.map(s => ({ ...s })), loose: [...WW.loose], pos: WW.pos, seq: WW.seq };
+  try { localStorage.setItem(LS.work(S.year, S.month, S.weekday), JSON.stringify(state)); renderProjectBar(true); } catch (e) { /* quota */ }
+}
+let _saveWorkT = null;
+function scheduleSaveWork() { if (!WW.open || S.month == null) return; clearTimeout(_saveWorkT); _saveWorkT = setTimeout(saveWork, 500); }
+function loadWork(weekday) {
+  try { const raw = localStorage.getItem(LS.work(S.year, S.month, weekday)); return raw ? JSON.parse(raw) : null; } catch { return null; }
+}
+function hasWork(weekday) { try { return !!localStorage.getItem(LS.work(S.year, S.month, weekday)); } catch { return false; } }
+function countWorkShifts(weekday) { const w = loadWork(weekday); return w && Array.isArray(w.shifts) ? w.shifts.length : 0; }
 
 /* ─────────────── Upload / parse ─────────────── */
 const dropzone = $("#dropzone");
@@ -170,8 +199,13 @@ async function uploadPdf(file) {
   if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") {
     st.className = "status err"; st.textContent = "Serve un file PDF."; return;
   }
+  const month = parseInt($("#impMonth").value, 10);
+  const year = parseInt($("#impYear").value, 10);
+  if (!(month >= 1 && month <= 12) || !(year >= 2000 && year <= 2100)) {
+    st.className = "status err"; st.textContent = "Scegli mese e anno del file prima di caricarlo."; return;
+  }
   st.className = "status load"; st.textContent = "⏳ Parsing del PDF in corso…";
-  const fd = new FormData(); fd.append("file", file);
+  const fd = new FormData(); fd.append("file", file); fd.append("month", month); fd.append("year", year);
   try {
     const res = await fetch("/api/parse", { method: "POST", body: fd });
     if (!res.ok) {
@@ -180,8 +214,9 @@ async function uploadPdf(file) {
     }
     const data = await res.json();
     if (!data.flights.length) { st.className = "status err"; st.textContent = "Nessun volo PAX riconosciuto nel PDF."; return; }
-    S.flights = data.flights;
+    S.flights = data.flights; S.meta = data.meta; S.month = month; S.year = year;
     st.className = "status ok"; st.textContent = `✔ ${data.meta.count} voli PAX su ${data.meta.days} giorni.`;
+    saveProject();
     initResults(data.meta);
   } catch (e) {
     st.className = "status err"; st.textContent = "✗ " + e.message;
@@ -200,6 +235,7 @@ function initResults(meta) {
     m.append(d);
   }
   $("#topMeta").textContent = `${meta.count} voli · ${meta.days} giorni`;
+  renderProjectBar();
 
   // giorni presenti
   const present = [...new Set(S.flights.map(f => f.weekday))].sort((a, b) => WEEKDAY_ORDER.indexOf(a) - WEEKDAY_ORDER.indexOf(b));
@@ -211,6 +247,38 @@ function initResults(meta) {
   $("#resultsCard").classList.remove("hidden");
   bindFilters();
   rebuildDay();
+}
+
+/* barra progetto: mese/anno del file + stato salvataggio */
+function renderProjectBar(justSaved) {
+  const bar = $("#projectBar");
+  if (!bar || S.month == null) { if (bar) bar.innerHTML = ""; return; }
+  const nWork = WEEKDAY_ORDER.filter(wd => hasWork(wd)).length;
+  bar.innerHTML = `<span class="pj-name">📅 ${MONTH_IT[S.month - 1]} ${S.year}</span>
+    <span>${S.meta ? `${S.meta.count} voli · ${S.meta.days} giorni` : ""}</span>
+    <span class="pj-spacer"></span>
+    ${nWork ? `<span class="pj-saved">💾 lavoro salvato · ${nWork} categori${nWork === 1 ? "a" : "e"}${justSaved ? " ✓" : ""}</span>` : ""}`;
+}
+
+/* chip dei GIORNI effettivi che appartengono alla categoria selezionata */
+function updateDayChips() {
+  const wrap = $("#dayChips"); if (!wrap) return;
+  wrap.innerHTML = "";
+  if (!S.dates.length) return;
+  wrap.append(el("span", "dc-label", `Giorni «${WEEKDAY_IT[S.weekday] || S.weekday}»`));
+  S.dates.forEach(d => {
+    const [, mo, da] = d.split("-");
+    wrap.append(el("span", "chip", `${+da} ${MONTH_IT[+mo - 1].slice(0, 3).toLowerCase()}`));
+  });
+  wrap.append(el("span", "dc-label", `· ${S.dates.length} giorni`));
+}
+
+/* pulsante "Riprendi lavoro" se esiste uno stato salvato per la categoria */
+function updateResumeButton() {
+  const btn = $("#resumeWorkBtn"); if (!btn) return;
+  const n = countWorkShifts(S.weekday);
+  if (n > 0 || hasWork(S.weekday)) { btn.style.display = ""; btn.textContent = `🪟 Riprendi lavoro${n ? ` (${n} turni)` : ""}`; }
+  else btn.style.display = "none";
 }
 
 function fmtDate(iso) { const [y, m, d] = iso.split("-"); return `${d}/${m}/${y}`; }
@@ -242,10 +310,15 @@ function rebuildDay() {
   airports.forEach(a => { const o = el("option"); o.value = a; o.textContent = a; if (prev.has(a)) o.selected = true; af.append(o); });
   af.size = Math.min(6, Math.max(3, airports.length));
 
+  updateDayChips();
+  updateResumeButton();
   renderMatrix();
 }
 
+let _filtersBound = false;
 function bindFilters() {
+  if (_filtersBound) return;   // gli elementi sono statici: lega gli handler una sola volta
+  _filtersBound = true;
   $("#weekdaySelect").addEventListener("change", e => { S.weekday = e.target.value; S.selected.clear(); rebuildDay(); });
   $("#flightFilter").addEventListener("input", renderMatrix);
   $("#airportFilter").addEventListener("change", renderMatrix);
@@ -265,6 +338,11 @@ function bindFilters() {
   $("#selectAllBtn").addEventListener("click", () => { visibleRows().forEach(r => S.selected.add(rowKey(r))); renderMatrix(); });
   $("#clearSelBtn").addEventListener("click", () => { S.selected.clear(); renderMatrix(); });
   $("#genCorseBtn").addEventListener("click", openGenDialog);
+  $("#resumeWorkBtn").addEventListener("click", () => {
+    const saved = loadWork(S.weekday);
+    if (!saved) { updateResumeButton(); return; }
+    openWorkWindow(null, saved);
+  });
 }
 
 function markPreset() {
@@ -346,6 +424,7 @@ function selectedRows() { return S.rows.filter(r => S.selected.has(rowKey(r))); 
 function openGenDialog() {
   const rows = selectedRows().filter(r => r.rep != null);
   if (!rows.length) { toast("Nessun volo selezionato con orario valido.", "err"); return; }
+  if (hasWork(S.weekday) && !confirm(`Esiste già un lavoro salvato per «${WEEKDAY_IT[S.weekday] || S.weekday}». Generare corse da capo lo SOVRASCRIVE. Continuare?\n(per riprenderlo usa «Riprendi lavoro»)`)) return;
   $("#genDayLabel").textContent = `${WEEKDAY_IT[S.weekday] || S.weekday} · ${rows.length} corse`;
 
   // rotte in arrivo → toggle Schengen
@@ -419,18 +498,29 @@ const WW = {
 const CARD_W = 470, CARD_H = 26;
 function fuoriFor(loc) { return FUORILINEA[loc] ?? 10; }
 
-function openWorkWindow(corse) {
-  WW.corse = new Map(corse.map(c => [c.id, c]));
-  WW.shifts = []; WW.loose = new Set(corse.map(c => c.id)); WW.selected = new Set();
-  WW.pos = {}; WW.seq = 0;
+/* apre la Finestra di Lavoro. Con `saved` ripristina uno stato salvato
+ * (turni, corse, posizioni); altrimenti parte dalle `corse` generate. */
+function openWorkWindow(corse, saved) {
+  if (saved) {
+    WW.corse = new Map((saved.corse || []).map(c => [c.id, c]));
+    WW.shifts = (saved.shifts || []).map(s => ({ gapModes: {}, typeOverride: null, ...s }));
+    WW.loose = new Set(saved.loose || []);
+    WW.pos = saved.pos || {};
+    WW.seq = saved.seq || Math.max(0, ...WW.shifts.map(s => parseInt(String(s.id).replace(/\D/g, ""), 10) || 0));
+  } else {
+    WW.corse = new Map(corse.map(c => [c.id, c]));
+    WW.shifts = []; WW.loose = new Set(corse.map(c => c.id));
+    WW.pos = {}; WW.seq = 0;
+    orderLoose([...WW.loose]);   // disposizione iniziale ordinata per orario
+  }
+  WW.selected = new Set();
   WW.dayLabel = WEEKDAY_IT[S.weekday] || S.weekday;
   WW.open = true;
-  // disposizione iniziale: colonna ordinata per orario
-  orderLoose([...WW.loose]);
   const root = $("#workWindow"); root.classList.remove("hidden");
   buildWWChrome(root);
   renderWW();
-  toast(`${corse.length} corse generate — componi i turni guida`, "ok");
+  if (saved) toast(`Lavoro ripreso · ${WW.shifts.length} turni · ${WW.loose.size} corse libere`, "ok");
+  else toast(`${corse.length} corse generate — componi i turni guida`, "ok");
 }
 
 function closeWorkWindow() { WW.open = false; $("#workWindow").classList.add("hidden"); $("#workWindow").innerHTML = ""; }
@@ -579,10 +669,12 @@ function buildWWChrome(root) {
 }
 
 function requestCloseWW() {
-  const looseTrips = WW.loose.size;
-  if (looseTrips > 0 && !confirm(`Ci sono ancora ${looseTrips} corse libere (scoperte). Uscire comunque?`)) return;
+  saveWork();   // il lavoro resta salvato tornando alla matrice
   window.removeEventListener("keydown", wwKeydown);
   closeWorkWindow();
+  updateResumeButton();
+  renderProjectBar();
+  toast("Lavoro salvato — potrai riprenderlo con «Riprendi lavoro»", "ok");
 }
 
 function wwKeydown(e) {
@@ -743,6 +835,7 @@ function renderWW() {
   WW.shiftCodes = computeShiftCodes();
   renderSidebar();
   renderCanvas();
+  scheduleSaveWork();   // autosalvataggio del lavoro
 }
 
 function renderSidebar() {
@@ -985,7 +1078,7 @@ function makeDraggable(handle, key, cardEl) {
       WW.pos[key] = { x: nx, y: ny };
       cardEl.style.left = nx + "px"; cardEl.style.top = ny + "px";
     };
-    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); setTimeout(() => dragMoved = false, 0); };
+    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); if (dragMoved) scheduleSaveWork(); setTimeout(() => dragMoved = false, 0); };
     window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
   });
 }
@@ -1018,7 +1111,9 @@ function makeLooseDraggable(cardEl, c) {
         if (shiftId) {
           const ids = sel ? [...WW.selected].filter(id => WW.loose.has(id)) : [c.id];
           moveTrips(ids, shiftId);
-          toast(`${ids.length} corse spostate nel turno ${shiftId}`, "ok");
+          toast(`${ids.length} corse spostate nel turno ${shiftCodeOf(shiftId)}`, "ok");
+        } else {
+          scheduleSaveWork();   // solo spostamento sul canvas → salva le posizioni
         }
       }
       setTimeout(() => dragMoved = false, 0);
@@ -1088,3 +1183,33 @@ function showCtx(ev, c) {
   setTimeout(() => { window.addEventListener("click", hideCtx, { once: true }); window.addEventListener("contextmenu", hideCtx, { once: true }); }, 0);
 }
 function hideCtx() { const m = $("#wwCtx"); if (m) m.remove(); }
+
+/* ─────────────── Avvio ─────────────── */
+(function init() {
+  // popola mese/anno (default = data corrente del browser)
+  const now = new Date();
+  const mSel = $("#impMonth");
+  MONTH_IT.forEach((name, i) => { const o = el("option"); o.value = String(i + 1); o.textContent = name; mSel.append(o); });
+  mSel.value = String(now.getMonth() + 1);
+  $("#impYear").value = String(now.getFullYear());
+
+  // ripristina l'ultimo progetto salvato (persistenza tra sessioni)
+  const proj = loadProjectStored();
+  if (proj && Array.isArray(proj.flights) && proj.flights.length && proj.month) {
+    S.flights = proj.flights; S.meta = proj.meta || null; S.month = proj.month; S.year = proj.year;
+    mSel.value = String(proj.month); $("#impYear").value = String(proj.year);
+    const banner = $("#resumeBanner");
+    banner.classList.remove("hidden");
+    banner.innerHTML = `↩️ Ripreso l'ultimo file: <b>${MONTH_IT[proj.month - 1]} ${proj.year}</b> (${(proj.meta && proj.meta.count) || proj.flights.length} voli). <button class="btn ghost" id="clearProj">Rimuovi salvataggio</button>`;
+    $("#clearProj").addEventListener("click", () => {
+      if (!confirm("Rimuovere il file salvato e tutti i lavori associati (turni)?")) return;
+      try {
+        localStorage.removeItem(LS.project);
+        WEEKDAY_ORDER.forEach(wd => localStorage.removeItem(LS.work(proj.year, proj.month, wd)));
+      } catch { /* ignore */ }
+      location.reload();
+    });
+    const meta = S.meta || { count: proj.flights.length, days: new Set(proj.flights.map(f => f.date)).size, start: null, end: null };
+    initResults(meta);
+  }
+})();
