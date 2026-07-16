@@ -239,9 +239,10 @@ table.matrix td.ad-A { color: var(--arr); font-weight: 700; } table.matrix td.ad
 .ww-row { display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 26px; font-size: 10.5px; border-left: 3px solid; }
 .ww-row.pickable { cursor: pointer; }
 .ww-row.sel { box-shadow: inset 0 0 0 2px rgba(255,255,255,.75); }
-.ww-row .r-line { width: 68px; flex-shrink: 0; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ww-row .r-t { width: 42px; flex-shrink: 0; font-family: ui-monospace, monospace; }
-.ww-row .r-loc { flex: 1; min-width: 0; opacity: .9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ww-row .r-line, .ww-loose .r-line { width: 108px; flex-shrink: 0; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: baseline; gap: 4px; }
+.r-ft { font-size: 8px; font-weight: 600; opacity: .65; letter-spacing: -.2px; }
+.ww-row .r-t, .ww-loose .r-t { width: 42px; flex-shrink: 0; font-family: ui-monospace, monospace; }
+.ww-row .r-loc, .ww-loose .r-loc { flex: 1; min-width: 0; opacity: .9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ww-gap { display: flex; align-items: center; gap: 6px; padding: 0 8px; min-height: 18px; font-size: 9px; color: var(--muted); }
 .ww-gap .ln { flex: 1; border-top: 1px dashed var(--border-strong); }
 .ww-gap.sosta { color: #67e8f9; }
@@ -263,6 +264,10 @@ table.matrix td.ad-A { color: var(--arr); font-weight: 700; } table.matrix td.ad
   border-radius: 7px; border: 1px solid; font-size: 10.5px; cursor: grab; box-shadow: 0 4px 10px rgba(0,0,0,.35); }
 .ww-loose:active { cursor: grabbing; }
 .ww-loose.sel { box-shadow: 0 0 0 2px rgba(255,255,255,.75); }
+.ww-del { flex-shrink: 0; margin-left: 2px; background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 11px; line-height: 1; padding: 2px 3px; border-radius: 4px; }
+.ww-del:hover { color: #fda4af; background: rgba(244,63,94,.15); }
+.ww-ctx-del { width: 100%; margin-top: 6px; padding: 5px 8px; border-radius: 7px; border: 1px solid rgba(244,63,94,.4); background: rgba(244,63,94,.12); color: #fda4af; font-size: 11px; font-weight: 700; cursor: pointer; }
+.ww-ctx-del:hover { background: rgba(244,63,94,.22); }
 
 /* colori per direzione: partenze (rosso) / arrivi (verde) */
 .dir-P { background: rgba(248,113,113,.16); border-color: rgba(248,113,113,.55); }

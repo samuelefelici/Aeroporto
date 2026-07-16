@@ -41,7 +41,9 @@ Ispirata alla "Finestra di Lavoro" dei turni guida di TransitIntel:
   - **Semiunico**: interruzione 40′–2h59′, nastro/lavoro ≤ 9h00;
   - **Spezzato**: interruzione ≥ 3h00, nastro/lavoro ≤ 10h30;
   - **Sosta inoperosa**: se l'autista resta fermo in **aeroporto > 30′** il gap è
-    *sosta inoperosa* (standby retribuito al 12% con strutture), nastro ≤ 9h15;
+    *sosta inoperosa* (standby retribuito al 12% con strutture), nastro ≤ 9h15.
+    Di sosta inoperosa ne esiste **una sola per turno** (la più lunga): le altre
+    soste in aeroporto sono **pagate al 100%**;
   - **RD 131**: guida continuativa ≤ 4h30 (reset con sosta ≥ 15′);
   - **Fuorilinea**: deposito Ancona ↔ **Piazza Cavour** = **10′**, deposito ↔
     **Aeroporto** = **30′** (aggiunti a inizio/fine turno).
@@ -52,7 +54,12 @@ Ispirata alla "Finestra di Lavoro" dei turni guida di TransitIntel:
   **trasferimento a vuoto** (Aeroporto ↔ Piazza Cavour = **30′**), inserito
   automaticamente e conteggiato nella guida;
 - l'operatore può **forzare la tipologia** del turno dal menu, se la
-  classificazione automatica non va bene.
+  classificazione automatica non va bene;
+- accanto al codice volo è mostrato in piccolo l'**orario del volo**
+  (🛫 decollo / 🛬 atterraggio);
+- le **corse non necessarie** si eliminano (✕ sulla card, tasto *Elimina corse*,
+  menu tasto destro o `Canc`);
+- **Esporta turni** scarica i turni creati in **CSV** (dettaglio corse + KPI).
 
 **Codifica dei turni**: `2 lettere del giorno` + `2 cifre` (**00–49** se il turno
 è di mattina, **50–99** se di pomeriggio) + una lettera finale **S** se il turno
