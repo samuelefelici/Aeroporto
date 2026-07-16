@@ -453,7 +453,7 @@ function verifyTurno(ids, opts = {}) {
   const fuoriRT = 2 * fuoriFor(LOC.APT);   // rientro deposito A/R (60')
 
   let guida = preF + postF + cs.reduce((s, c) => s + (c.endMin - c.startMin), 0);
-  let unpaid = 0, maxRealBreak = 0, hasSosta = false;
+  let unpaid = 0, maxRealBreak = 0;
   const gapInfo = [];
   let run = preF + (cs[0].endMin - cs[0].startMin), maxCont = 0;   // guida continuativa (RD131)
 
@@ -464,7 +464,7 @@ function verifyTurno(ids, opts = {}) {
     const locPrev = c0.to, locNext = c1.from;
     const key = c0.id + ">" + c1.id;
     const mode = gapModes[key];
-    let kind, transferMin = 0, idle = g, breaksCont = false, canDepot = false;
+    let kind, transferMin = 0, idle = g, breaksCont = false, canDepot = false, sostaAmount = 0;
 
     if (locPrev !== locNext) {
       // trasferimento a vuoto obbligatorio (il bus deve riposizionarsi)
@@ -473,7 +473,7 @@ function verifyTurno(ids, opts = {}) {
       if (idle < 0) { violations.push(`Trasferimento a vuoto ${fmtDur(TRANSFER_EMPTY)} incompatibile col gap ${fmtDur(g)} (${c0.flight}·${c1.flight})`); idle = 0; }
       guida += transferMin;
       if (locPrev === LOC.APT && idle > SOSTA.thresholdMin) {
-        kind = "sosta_inoperosa"; hasSosta = true; unpaid += idle * (1 - SOSTA.coeff); breaksCont = true;
+        kind = "sosta_inoperosa"; sostaAmount = idle; breaksCont = true;   // retribuzione decisa dopo (solo la più lunga è al 12%)
       } else if (idle >= RULES.semiunico.intMin) {
         kind = "break"; unpaid += idle; maxRealBreak = Math.max(maxRealBreak, idle); breaksCont = true;
       } else {
@@ -485,7 +485,7 @@ function verifyTurno(ids, opts = {}) {
       if (mode === "deposito" && canDepot) {
         kind = "deposito"; guida += fuoriRT; unpaid += Math.max(0, g - fuoriRT); maxRealBreak = Math.max(maxRealBreak, g); breaksCont = true;
       } else if (airportSosta) {
-        kind = "sosta_inoperosa"; hasSosta = true; unpaid += g * (1 - SOSTA.coeff); breaksCont = true;
+        kind = "sosta_inoperosa"; sostaAmount = g; breaksCont = true;
       } else if (g >= RULES.semiunico.intMin) {
         kind = "break"; unpaid += g; maxRealBreak = Math.max(maxRealBreak, g); breaksCont = true;
       } else {
@@ -496,9 +496,22 @@ function verifyTurno(ids, opts = {}) {
     // contigua alla corsa seguente
     if (breaksCont) { maxCont = Math.max(maxCont, run); run = 0; }
     run += transferMin + (c1.endMin - c1.startMin);
-    gapInfo.push({ i, key, dur: g, kind, loc: locPrev, locNext, transferMin, idle, canDepot });
+    gapInfo.push({ i, key, dur: g, kind, loc: locPrev, locNext, transferMin, idle, canDepot, sostaAmount });
   }
   run += postF; maxCont = Math.max(maxCont, run);
+
+  // di sosta inoperosa ce n'è UNA SOLA (la più lunga): retribuita a quota 0.12.
+  // Le altre soste in aeroporto sono pagate al 100% (kind "sosta_pagata").
+  const sostaGaps = gapInfo.filter(x => x.kind === "sosta_inoperosa");
+  let hasSosta = false;
+  if (sostaGaps.length) {
+    let longest = sostaGaps[0];
+    for (const x of sostaGaps) if (x.sostaAmount > longest.sostaAmount) longest = x;
+    for (const x of sostaGaps) {
+      if (x === longest) { unpaid += x.sostaAmount * (1 - SOSTA.coeff); hasSosta = true; }
+      else { x.kind = "sosta_pagata"; }   // pagata al 100% → nessun unpaid
+    }
+  }
 
   const lavoro = Math.round(nastro - unpaid);
 
@@ -536,7 +549,9 @@ function buildWWChrome(root) {
     <span id="wwSel"></span>
     <div class="ww-actions">
       <button class="ww-btn" id="wwOrder">↕ Ordina per orario</button>
+      <button class="ww-btn" id="wwDelete">🗑 Elimina corse</button>
       <button class="ww-btn" id="wwUnpackAll">📤 Spacchetta tutto</button>
+      <button class="ww-btn" id="wwExport">⬇ Esporta turni</button>
       <button class="ww-btn primary" id="wwRepack">📦 Rimpacchetta</button>
     </div>`;
   root.append(header);
@@ -556,6 +571,8 @@ function buildWWChrome(root) {
   });
   $("#wwUnpackAll").addEventListener("click", () => { WW.shifts.slice().forEach(s => unpackShift(s.id, false)); renderWW(); });
   $("#wwRepack").addEventListener("click", repack);
+  $("#wwDelete").addEventListener("click", deleteSelectedCorse);
+  $("#wwExport").addEventListener("click", exportTurni);
 
   canvas.addEventListener("mousedown", bandStart);
   window.addEventListener("keydown", wwKeydown);
@@ -574,6 +591,7 @@ function wwKeydown(e) {
   if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
   if (e.key === "Escape") { WW.selected.clear(); hideCtx(); renderWW(); }
   else if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) { e.preventDefault(); WW.loose.forEach(id => WW.selected.add(id)); renderWW(); }
+  else if (e.key === "Delete" && WW.selected.size) { e.preventDefault(); deleteSelectedCorse(); }
 }
 
 /* ── layout helpers ── */
@@ -647,6 +665,51 @@ function moveTrips(ids, targetShiftId) {
   renderWW();
 }
 
+/* elimina corse (non servono): tolte dai turni, dalle libere e dal totale. */
+function deleteCorse(ids) {
+  if (!ids || !ids.length) return;
+  const set = new Set(ids);
+  ids.forEach(id => { WW.corse.delete(id); WW.loose.delete(id); WW.selected.delete(id); delete WW.pos["loose:" + id]; });
+  for (const s of WW.shifts) s.corsaIds = s.corsaIds.filter(id => !set.has(id));
+  WW.shifts = WW.shifts.filter(s => s.corsaIds.length);
+  renderWW();
+}
+function deleteSelectedCorse() {
+  const ids = [...WW.selected];
+  if (!ids.length) { toast("Seleziona le corse da eliminare.", "err"); return; }
+  if (!confirm(`Eliminare ${ids.length} cors${ids.length === 1 ? "a" : "e"}? Verranno rimosse dal piano.`)) return;
+  deleteCorse(ids);
+  toast(`${ids.length} cors${ids.length === 1 ? "a eliminata" : "e eliminate"}`, "ok");
+}
+
+/* esporta i turni creati in CSV (separatore ';' + BOM per Excel IT). */
+function exportTurni() {
+  if (!WW.shifts.length) { toast("Nessun turno da esportare.", "err"); return; }
+  const codes = computeShiftCodes();
+  const sep = ";";
+  const esc = v => { const s = String(v ?? ""); return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const header = ["Turno", "Tipologia", "Inizio", "Fine", "Nastro", "Lavoro", "Guida", "Costo€", "Valido", "Violazioni", "Volo", "OrarioVolo", "Rotta", "Movimento", "Da", "PartenzaBus", "A", "ArrivoBus"];
+  const lines = [header.join(sep)];
+  const ordered = WW.shifts.map(s => ({ s, v: verifyShift(s), code: codes[s.id] || s.id })).sort((a, b) => a.v.turnoStart - b.v.turnoStart);
+  for (const { s, v, code } of ordered) {
+    v.cs.forEach((c, i) => {
+      const row = i === 0
+        ? [code, TYPE_LABEL[v.type], fmtMin(v.turnoStart), fmtMin(v.turnoEnd), fmtDur(v.nastroMin), fmtDur(v.lavoroMin), fmtDur(v.guidaMin), v.costEuro, v.valid ? "si" : "NO", v.violations.join(" | ")]
+        : ["", "", "", "", "", "", "", "", "", ""];
+      row.push(c.flight, fmtMin(c.flightTime), c.route, c.dir === "A" ? "Arrivo" : "Partenza", c.from, fmtMin(c.startMin), c.to, fmtMin(c.endMin));
+      lines.push(row.map(esc).join(sep));
+    });
+  }
+  const csv = "﻿" + lines.join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `turni_${(WW.dayLabel || "giorno").toLowerCase()}.csv`;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`${WW.shifts.length} turni esportati (CSV)`, "ok");
+}
+
 /* ── render ── */
 function renderWW() {
   if (!WW.open) return;
@@ -673,6 +736,9 @@ function renderWW() {
   $("#wwRepack").disabled = WW.selected.size === 0;
   $("#wwRepack").textContent = `📦 Rimpacchetta${WW.selected.size ? ` (${WW.selected.size})` : ""}`;
   $("#wwUnpackAll").disabled = WW.shifts.length === 0;
+  $("#wwDelete").disabled = WW.selected.size === 0;
+  $("#wwDelete").textContent = `🗑 Elimina corse${WW.selected.size ? ` (${WW.selected.size})` : ""}`;
+  $("#wwExport").disabled = WW.shifts.length === 0;
 
   WW.shiftCodes = computeShiftCodes();
   renderSidebar();
@@ -740,7 +806,11 @@ function renderCanvas() {
 
 function rowCells(c) {
   const wrap = document.createDocumentFragment();
-  const line = el("span", "r-line", c.flight); wrap.append(line);
+  const line = el("span", "r-line");
+  // codice volo + orario del volo in piccolo (🛫 decollo / 🛬 atterraggio)
+  line.innerHTML = `${c.flight}<span class="r-ft">${c.dir === "A" ? "🛬" : "🛫"}${fmtMin(c.flightTime)}</span>`;
+  line.title = `Volo ${c.flight} · ${c.dir === "A" ? "atterraggio" : "decollo"} ${fmtMin(c.flightTime)}`;
+  wrap.append(line);
   wrap.append(el("span", "r-t", fmtMin(c.startMin)));
   wrap.append(el("span", "r-loc", c.from + (c.dir === "A" ? ` (${c.route})` : "")));
   wrap.append(el("span", "r-t", fmtMin(c.endMin)));
@@ -757,11 +827,12 @@ function gapRow(s, g) {
   // l'attesa avviene a locPrev, POI (se serve) il trasferimento a vuoto
   const tf = g.transferMin > 0 ? ` + 🔄 trasf. a vuoto ${fmtDur(g.transferMin)} (${g.loc}→${g.locNext})` : "";
   const setLabel = (txt) => { row.innerHTML = `<span class="ln"></span><span>${txt}</span><span class="ln"></span>`; };
-  if (g.kind === "sosta_inoperosa") {
+  if (g.kind === "sosta_inoperosa" || g.kind === "sosta_pagata") {
     row.classList.add("sosta");
     const dur = g.transferMin > 0 ? g.idle : g.dur;
     const hint = g.canDepot ? " · clic → rientro deposito" : "";
-    setLabel(`🅿️ sosta inoperosa ${fmtDur(dur)} (aeroporto)${tf}${hint}`);
+    const lab = g.kind === "sosta_pagata" ? `🅿️ sosta ${fmtDur(dur)} (aeroporto, pagata 100%)` : `🅿️ sosta inoperosa ${fmtDur(dur)} (aeroporto)`;
+    setLabel(`${lab}${tf}${hint}`);
     if (g.canDepot) {
       row.style.cursor = "pointer";
       row.title = `Passa a rientro in deposito (+${fmtDur(fuoriRT)} di fuorilinea)`;
@@ -826,7 +897,7 @@ function shiftCard(s) {
   const gapByIdx = {}; v.gapInfo.forEach(g => { gapByIdx[g.i] = g; });
   v.cs.forEach((c, idx) => {
     const g = gapByIdx[idx];
-    if (g && (g.kind === "sosta_inoperosa" || g.kind === "deposito" || g.kind === "break" || g.transferMin > 0)) rows.append(gapRow(s, g));
+    if (g && (g.kind === "sosta_inoperosa" || g.kind === "sosta_pagata" || g.kind === "deposito" || g.kind === "break" || g.transferMin > 0)) rows.append(gapRow(s, g));
     const r = el("div", "ww-row pickable dir-" + c.dir); if (WW.selected.has(c.id)) r.classList.add("sel");
     r.append(rowCells(c));
     r.addEventListener("click", ev => rowClick(ev, c.id));
@@ -847,6 +918,10 @@ function looseCard(c) {
   card.style.left = p.x + "px"; card.style.top = p.y + "px";
   if (WW.selected.has(c.id)) card.classList.add("sel");
   card.append(rowCells(c));
+  const del = el("button", "ww-del", "✕"); del.title = "Elimina questa corsa";
+  del.addEventListener("mousedown", e => e.stopPropagation());
+  del.addEventListener("click", e => { e.stopPropagation(); if (confirm(`Eliminare la corsa ${c.flight}?`)) { deleteCorse([c.id]); toast("Corsa eliminata", "ok"); } });
+  card.append(del);
   card.dataset.loose = c.id;
   card.addEventListener("click", ev => rowClick(ev, c.id));
   card.addEventListener("contextmenu", ev => showCtx(ev, c));
@@ -1004,6 +1079,9 @@ function showCtx(ev, c) {
     <div><span class="k">Da:</span> <b>${c.from}</b> ${fmtMin(c.startMin)}</div>
     <div><span class="k">A:</span> <b>${c.to}</b> ${fmtMin(c.endMin)}</div>
     <div><span class="k">Durata:</span> <b>${fmtDur(c.endMin - c.startMin)}</b></div>`;
+  const delBtn = el("button", "ww-ctx-del", "🗑 Elimina corsa");
+  delBtn.addEventListener("click", () => { hideCtx(); if (confirm(`Eliminare la corsa ${c.flight}?`)) { deleteCorse([c.id]); toast("Corsa eliminata", "ok"); } });
+  menu.append(delBtn);
   document.body.append(menu);
   menu.style.left = Math.min(ev.clientX, window.innerWidth - 250) + "px";
   menu.style.top = Math.min(ev.clientY, window.innerHeight - 170) + "px";
