@@ -172,10 +172,85 @@ const LS = {
   work: (y, m, wd) => `aeroporto.work.v1.${y}-${String(m).padStart(2, "0")}.${wd}`,
 };
 
-async function detectPersistence() {
-  try { const r = await fetch("/api/persistence"); S.serverPersist = r.ok && !!(await r.json()).enabled; }
-  catch { S.serverPersist = false; }
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+
+async function detectPersistence(force = false) {
+  const wasEnabled = S.serverPersist;
+  try {
+    const r = await fetch("/api/persistence" + (force ? "?force=1" : ""));
+    if (r.ok) {
+      const d = await r.json();
+      S.serverPersist = !!d.enabled;
+      S.persistError = d.error || null;
+      S.persistHint = d.hint || null;
+    } else {
+      // NON azzerare l'errore precedente: il banner (col pulsante Riprova) resta
+      S.serverPersist = false;
+      S.persistError = S.persistError || `Backend non raggiungibile (HTTP ${r.status}).`;
+    }
+  } catch {
+    S.serverPersist = false;
+    S.persistError = S.persistError || "Backend non raggiungibile (errore di rete).";
+  }
+  // DB tornato su: migra sul server i dati rimasti solo in questo browser
+  if (!wasEnabled && S.serverPersist) await syncLocalToServer();
+  updatePersistBanner();
   return S.serverPersist;
+}
+
+/* migrazione localStorage → server: SOLO ciò che il server non ha (404),
+ * così non si sovrascrive mai il lavoro più recente di un altro dispositivo. */
+async function syncLocalToServer() {
+  try {
+    const p = loadProjectStored();
+    if (!p || !p.month || !Array.isArray(p.flights) || !p.flights.length) return;
+    const g = await fetch(`/api/projects/${p.year}/${p.month}`);
+    if (g.status === 404) {
+      await fetch(`/api/projects/${p.year}/${p.month}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ meta: p.meta, flights: p.flights }) });
+    }
+    for (const wd of WEEKDAY_ORDER) {
+      let lw = null;
+      try { const raw = localStorage.getItem(LS.work(p.year, p.month, wd)); lw = raw ? JSON.parse(raw) : null; } catch { /* ignore */ }
+      if (!lw) continue;
+      const gw = await fetch(`/api/works/${p.year}/${p.month}/${wd}`);
+      if (gw.status === 404) {
+        await fetch(`/api/works/${p.year}/${p.month}/${wd}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state: lw }) });
+      }
+    }
+  } catch { /* best-effort: al prossimo giro riprova */ }
+}
+
+/* banner: DATABASE_URL configurato ma DB non raggiungibile → mostra perché */
+function updatePersistBanner() {
+  const elB = $("#persistBanner"); if (!elB) return;
+  if (S.serverPersist || !S.persistError) { elB.classList.add("hidden"); return; }
+  elB.classList.remove("hidden");
+  elB.innerHTML = `⚠ <b>Persistenza server NON attiva</b> — i salvataggi restano solo in questo browser.<br>
+    <span class="pe-err">${escapeHtml(S.persistError)}</span>
+    ${S.persistHint ? `<br>💡 ${escapeHtml(S.persistHint)}` : ""}
+    <br><button class="btn ghost" id="persistRetry">↻ Riprova connessione</button>`;
+  $("#persistRetry").addEventListener("click", async () => {
+    const was = S.serverPersist;
+    const ok = await detectPersistence(true);   // force: bypassa il cooldown lato server
+    if (ok && !was) {
+      toast("Persistenza server ATTIVA ✔ — dati locali sincronizzati", "ok");
+      await loadWorksSummary();
+      refreshProjectPicker();
+      if (S.weekday) updateResumeButton();
+    } else if (!ok) {
+      toast("DB ancora non raggiungibile", "err");
+    }
+  });
+}
+
+/* salvataggio sul server fallito (DB caduto a runtime): avvisa UNA volta
+ * e aggiorna lo stato — la copia locale resta comunque salvata. */
+function onServerSaveFailure() {
+  if (!S.saveFailNotified) {
+    S.saveFailNotified = true;
+    toast("⚠ Salvataggio sul server FALLITO — la copia locale è conservata", "err", 5000);
+  }
+  void detectPersistence();
 }
 
 /* ── progetti ── */
@@ -230,9 +305,11 @@ function saveWork() {
   try { localStorage.setItem(LS.work(S.year, S.month, S.weekday), JSON.stringify(state)); } catch { /* quota */ }
   S.worksSummary[S.weekday] = WW.shifts.length;
   renderProjectBar(true);
-  // scrittura server asincrona (best-effort)
+  // scrittura server asincrona (best-effort, con avviso se fallisce)
   if (S.serverPersist) {
-    fetch(`/api/works/${S.year}/${S.month}/${S.weekday}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state }) }).catch(() => { /* offline */ });
+    fetch(`/api/works/${S.year}/${S.month}/${S.weekday}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state }) })
+      .then(r => { if (!r.ok) onServerSaveFailure(); else S.saveFailNotified = false; })
+      .catch(() => onServerSaveFailure());
   }
 }
 let _saveWorkT = null;

@@ -21,9 +21,10 @@ Endpoint:
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import DBAPIError
 
 import db
 from flight_parser import parse_pdf_to_flights
@@ -41,8 +42,24 @@ db.init_db()
 
 
 def _require_db() -> None:
+    # ensure_db: se il DB era giù all'avvio ma ora è raggiungibile, si riaggancia
+    # da solo (senza redeploy) al primo endpoint di persistenza chiamato.
+    db.ensure_db()
     if not db.enabled():
-        raise HTTPException(status_code=503, detail="Persistenza server non disponibile.")
+        err = db.init_error()
+        raise HTTPException(status_code=503,
+                            detail=f"Persistenza server non disponibile.{' ' + err if err else ''}")
+
+
+@app.exception_handler(DBAPIError)
+async def _db_runtime_error(request: Request, exc: DBAPIError) -> JSONResponse:
+    """DB caduto DOPO l'avvio: gli endpoint di persistenza rispondono 503
+    (non 500) con messaggio sanitizzato, e lo stato viene aggiornato (ping)
+    così /api/persistence e il banner riflettono subito la realtà."""
+    db.ping()
+    return JSONResponse(status_code=503,
+                        content={"detail": "Database non raggiungibile: "
+                                 + db.sanitize(str(exc.orig or exc))[:300]})
 
 
 @app.get("/health", response_class=PlainTextResponse)
@@ -52,9 +69,19 @@ def health() -> str:
 
 
 @app.get("/api/persistence")
-def persistence_status() -> Dict[str, Any]:
-    """Indica al frontend se la persistenza server-side è disponibile."""
-    return {"enabled": db.enabled()}
+def persistence_status(force: bool = False) -> Dict[str, Any]:
+    """Stato della persistenza server-side: se disabilitata, spiega PERCHÉ.
+
+    `error` è il messaggio di connessione (password mascherata) e `hint` un
+    suggerimento operativo (SSL, rete Docker, credenziali, permessi...).
+    - ensure_db: se il DB è tornato raggiungibile, si riattiva da sola
+      (force=1 bypassa il cooldown → pulsante «Riprova connessione»);
+    - ping: rileva anche un DB caduto DOPO l'avvio (enabled non mente).
+    """
+    db.ensure_db(force=force)
+    if db.enabled():
+        db.ping()
+    return {"enabled": db.enabled(), "error": db.init_error(), "hint": db.init_hint()}
 
 
 @app.post("/api/parse")

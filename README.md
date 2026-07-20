@@ -100,6 +100,26 @@ funzionante**: la persistenza server è disabilitata (endpoint `GET /api/persist
 Endpoint di persistenza: `GET/PUT/DELETE /api/projects[/{year}/{month}]` e
 `GET/PUT/DELETE /api/works/{year}/{month}[/{weekday}]`.
 
+### Se `/api/persistence` risponde `{"enabled": false}`
+
+La risposta include anche **`error`** (messaggio di connessione, password mascherata)
+e **`hint`** (suggerimento operativo); gli stessi dettagli compaiono nei **log
+dell'app** all'avvio (`[db] Persistenza DISABILITATA: …`) e in un **banner nella UI**.
+Cause tipiche:
+
+| Errore | Rimedio |
+|---|---|
+| `timeout` / host non raggiungibile | Su Coolify app e DB devono stare sulla **stessa rete Docker**: usa l'**URL interno** del DB o abilita *Connect To Predefined Network* sull'app; in alternativa esponi il DB e usa host/porta pubblici |
+| `could not translate host name` | Hostname sbagliato o rete diversa: copia l'hostname interno esatto dalla risorsa DB |
+| `SSL required` | Aggiungi `?sslmode=require` in fondo al `DATABASE_URL` |
+| `password authentication failed` | Credenziali errate; se la password ha caratteri speciali (`@ / : #`) va URL-encoded (es. `@` → `%40`) |
+| `permission denied` | L'utente non può creare tabelle: usa l'utente proprietario del DB |
+
+Dopo aver corretto la variabile, **redeploy**. Se invece è il DB a essere
+momentaneamente giù, non serve nulla: l'app **ritenta da sola** (max ogni 30″)
+e si riaggancia appena il DB torna raggiungibile (pulsante *Riprova connessione*
+nel banner).
+
 ---
 
 ## 🚀 Avvio in locale

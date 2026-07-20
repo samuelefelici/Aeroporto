@@ -77,6 +77,10 @@ body {
 .project-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(167,139,250,.4); background: rgba(167,139,250,.08); }
 .project-picker label { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .project-picker .pp-note { font-size: 11px; color: var(--muted); }
+.persist-banner { font-size: 12px; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(244,63,94,.45); background: rgba(244,63,94,.1); line-height: 1.6; }
+.persist-banner b { color: #fda4af; }
+.persist-banner .pe-err { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); word-break: break-all; }
+.persist-banner button { margin-top: 6px; }
 .resume-banner { font-size: 13px; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(167,139,250,.4); background: rgba(167,139,250,.1); }
 .resume-banner b { color: var(--accent); }
 .resume-banner button { margin-left: 8px; }
